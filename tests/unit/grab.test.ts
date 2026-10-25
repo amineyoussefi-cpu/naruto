@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createQte, qteApply, qteFinish, qteTick, randomArrows } from '../../src/combat/grab';
+import { createQte, qteApply, qteFinish, qteTick, randomArrows } from '../../src/sim/combat/grab';
 import type { QteDir } from '../../src/core/types';
 
 const ARROWS: QteDir[] = ['up', 'left', 'down', 'right', 'up', 'down'];

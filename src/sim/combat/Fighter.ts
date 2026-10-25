@@ -1,5 +1,5 @@
-import { CHAKRA } from '../config/chakra';
-import { COMBAT } from '../config/combat';
+import { CHAKRA } from '../../config/chakra';
+import { COMBAT } from '../../config/combat';
 
 export interface FighterStats { maxHp: number; maxChakra: number }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Fighter } from '../../src/combat/Fighter';
+import { Fighter } from '../../src/sim/combat/Fighter';
 import { CHAKRA } from '../../src/config/chakra';
 import { COMBAT } from '../../src/config/combat';
 

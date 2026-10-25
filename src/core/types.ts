@@ -1,5 +1,6 @@
 /** Shared gameplay types. Owner: integration. Changes here must be coordinated. */
-export type Team = 'player' | 'enemy';
+/** 'player' = co-op humans, 'enemy' = AI, 'red' / 'blue' = PvP teams. Different teams are hostile. */
+export type Team = 'player' | 'enemy' | 'red' | 'blue';
 export type ActorKind = 'player' | 'melee' | 'ranged';
 export type GameState = 'menu' | 'playing' | 'paused' | 'victory' | 'defeat';
 /** Playable characters (selected in the menu). */
@@ -34,7 +35,9 @@ export type AnimState =
   /** Charging Rasengan/Chidori (hold), Chidori piercing dash, Sharingan cast, dazed by genjutsu. */
   | 'charge' | 'chidori' | 'sharingan' | 'dazed'
   /** Grab sequence: attacker hold, one strike per arrow direction, finisher; victim held. */
-  | 'grabHold' | 'strikeUp' | 'strikeDown' | 'strikeLeft' | 'strikeRight' | 'grabFinisher' | 'grabbed';
+  | 'grabHold' | 'strikeUp' | 'strikeDown' | 'strikeLeft' | 'strikeRight' | 'grabFinisher' | 'grabbed'
+  /** Co-op: knocked out, crawling until revived or bled out. */
+  | 'downed';
 
 export type AttackKind = 'combo1' | 'combo2' | 'combo3' | 'combo4' | 'combo5' | 'kunai' | 'special' | 'chidori' | 'grabStrike' | 'grabFinisher' | 'enemyMelee' | 'enemyRanged';
 

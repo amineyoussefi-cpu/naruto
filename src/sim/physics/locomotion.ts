@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { MOVEMENT } from '../config/movement';
+import { MOVEMENT } from '../../config/movement';
 import { approachXZ } from '../player/movementMath';
-import type { Actor } from '../game/Actor';
+import type { Actor } from '../Actor';
 import type { PhysicsWorld } from './PhysicsWorld';
 
 const tmp = new THREE.Vector3();

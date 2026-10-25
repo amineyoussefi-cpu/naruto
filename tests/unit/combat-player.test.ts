@@ -1,22 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { Fighter } from '../../src/combat/Fighter';
-import { CombatSystem } from '../../src/combat/CombatSystem';
-import { PlayerCombat } from '../../src/combat/PlayerCombat';
-import { Actor } from '../../src/game/Actor';
+import { Fighter } from '../../src/sim/combat/Fighter';
+import { CombatSystem } from '../../src/sim/combat/CombatSystem';
+import { PlayerCombat } from '../../src/sim/combat/PlayerCombat';
+import { Actor } from '../../src/sim/Actor';
 import { EventBus } from '../../src/core/events';
 import type { Action } from '../../src/core/input';
-import type { GameContext } from '../../src/game/context';
-import type { NinjaModel } from '../../src/render/NinjaModel';
-import type { CharacterBody } from '../../src/physics/PhysicsWorld';
+import type { PlayerState, SimContext } from '../../src/sim/context';
+import { actionBit, emptyInput, type InputAction } from '../../src/sim/protocol';
+import type { CharacterBody } from '../../src/sim/physics/PhysicsWorld';
 import { COMBAT } from '../../src/config/combat';
 import type { CharacterId } from '../../src/core/types';
 
 const DT = 1 / 60;
-const model = { flash() {}, setAura() {}, setGuard() {}, setHandOrb() {}, setSharingan() {}, setDazed() {} } as unknown as NinjaModel;
 
 function enemy(x: number, z: number, hp = 500): Actor {
-  const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: hp, maxChakra: 0 }), model, {} as CharacterBody, 0.4, 1.8);
+  const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: hp, maxChakra: 0 }), {} as CharacterBody, 0.4, 1.8);
   e.position.set(x, 0, z);
   e.grounded = true;
   return e;
@@ -26,32 +25,40 @@ type Ray = (o: THREE.Vector3, d: THREE.Vector3, max: number) => { distance: numb
 
 /** `walls`: raycast directions (unit x/z) reported as blocked; `raycast` overrides it. */
 function setup(enemies: Actor[] = [], walls: { x: number; z: number }[] = [], opts: { character?: CharacterId; raycast?: Ray; chakra?: number } = {}) {
-  const p = new Actor('player', 'player', 'p', new Fighter({ maxHp: 100, maxChakra: opts.chakra ?? 100 }), model, {} as CharacterBody, 0.4, 1.8);
+  const p = new Actor('player', 'player', 'p', new Fighter({ maxHp: 100, maxChakra: opts.chakra ?? 100 }), {} as CharacterBody, 0.4, 1.8);
   p.grounded = true;
   const held = new Set<Action>();
   const events = new EventBus();
+  const player = {
+    id: 1, name: 'p', character: opts.character ?? 'naruto', actor: p, pressed: new Set<InputAction>(), lockTarget: null,
+    qte: null, qteInputs: [], charge: null, rtt: 0, connected: true,
+    get input() {
+      let bits = 0;
+      for (const a of held) bits |= actionBit(a as InputAction);
+      return { ...emptyInput(), held: bits };
+    },
+  } as unknown as PlayerState;
   const ctx = {
-    scene: new THREE.Scene(), events, actors: [p, ...enemies], player: p, pressed: new Set<Action>(),
+    events, actors: [p, ...enemies], players: new Map([[1, player]]), rng: Math.random,
     physics: {
       raycast: opts.raycast ?? ((_o: THREE.Vector3, d: THREE.Vector3) => (walls.some((w) => Math.abs(w.x - d.x) < 1e-6 && Math.abs(w.z - d.z) < 1e-6) ? { distance: 0.5 } : null)),
       teleport: () => {},
     },
-    input: { isHeld: (a: Action) => held.has(a), moveAxes: () => ({ x: 0, y: 0 }) },
-    camera: { yaw: 0, lockTarget: null, camera: new THREE.PerspectiveCamera() },
     enemies: () => enemies.filter((e) => e.alive),
-    character: opts.character ?? 'naruto', qte: null, qteInputs: [],
-  } as unknown as GameContext;
+    hostiles: () => enemies.filter((e) => e.alive && !e.removed),
+    rewound: (t: Actor) => t.position,
+  } as unknown as SimContext;
   ctx.combat = new CombatSystem(ctx);
-  const pc = new PlayerCombat(ctx, p);
+  const pc = new PlayerCombat(ctx, player);
   /** One sim step; the player moves by its forced velocity (stand-in for the controller). */
   const step = (press: Action[] = []) => {
-    ctx.pressed = new Set(press);
+    player.pressed = new Set(press as InputAction[]);
     pc.update(DT);
     const v = p.control.forcedVelocity;
     if (v) p.position.addScaledVector(v, DT);
     ctx.combat.update(DT);
   };
-  return { p, pc, ctx, held, events, step };
+  return { p, pc, ctx, player, held, events, step };
 }
 
 describe('PlayerCombat', () => {
@@ -229,7 +236,7 @@ describe('PlayerCombat', () => {
     expect(starts).toBe(1);
     expect(p.control.allowMove).toBe(false);
     expect(p.fighter.concentrating).toBe(true);
-    const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: 10, maxChakra: 0 }), model, {} as CharacterBody, 0.4, 1.8);
+    const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: 10, maxChakra: 0 }), {} as CharacterBody, 0.4, 1.8);
     ctx.combat.dealDamage(e, p, 1, 0, 'enemyMelee', p.chest());
     for (let i = 0; i < 60; i++) step(); // still holding: stays interrupted
     expect(p.fighter.concentrating).toBe(false);
@@ -349,13 +356,13 @@ describe('PlayerCombat v4 techniques', () => {
     const ends: string[] = [];
     t.events.on('grabEnd', (ev) => ends.push(`${ev.result}:${ev.hits}`));
     t.step(['grab']);
-    const q = t.ctx.qte!;
+    const q = t.player.qte!;
     expect(q.arrows).toHaveLength(COMBAT.grab.arrows);
     expect(e.grabbedBy).toBe(t.p.id);
     expect(e.anim).toBe('grabbed');
     expect(t.p.fighter.invulnerable).toBe(true);
     for (const dir of q.arrows) {
-      t.ctx.qteInputs.push(dir);
+      t.player.qteInputs.push(dir);
       t.step();
     }
     expect(ends).toEqual([`complete:${COMBAT.grab.arrows}`]);
@@ -367,7 +374,7 @@ describe('PlayerCombat v4 techniques', () => {
     for (let i = 0; i < g.arrows; i++) strikes += g.damagePerHit * (1 + g.damageRamp * i);
     expect(e.fighter.hp).toBeCloseTo(500 - strikes - g.finisherDamage);
     for (let i = 0; i < Math.ceil(g.outro * 60) + 1; i++) t.step();
-    expect(t.ctx.qte).toBeNull();
+    expect(t.player.qte).toBeNull();
   });
 
   it('grab: strikes never kill a weak enemy, so the sequence completes and the finisher gets the kill', () => {
@@ -377,7 +384,7 @@ describe('PlayerCombat v4 techniques', () => {
     const ends: string[] = [];
     t.events.on('grabEnd', (ev) => ends.push(ev.result));
     t.step(['grab']);
-    for (const dir of t.ctx.qte!.arrows) { t.ctx.qteInputs.push(dir); t.step(); }
+    for (const dir of t.player.qte!.arrows) { t.player.qteInputs.push(dir); t.step(); }
     expect(ends).toEqual(['complete']);
     expect(e.alive).toBe(false);
   });
@@ -388,8 +395,8 @@ describe('PlayerCombat v4 techniques', () => {
     const ends: string[] = [];
     t.events.on('grabEnd', (ev) => ends.push(ev.result));
     t.step(['grab']);
-    const wrong = t.ctx.qte!.arrows[0] === 'up' ? 'down' : 'up';
-    t.ctx.qteInputs.push(wrong);
+    const wrong = t.player.qte!.arrows[0] === 'up' ? 'down' : 'up';
+    t.player.qteInputs.push(wrong);
     t.step();
     expect(ends).toEqual(['miss']);
     expect(e.grabbedBy).toBeNull();
@@ -400,7 +407,7 @@ describe('PlayerCombat v4 techniques', () => {
 
     const w = setup([enemy(0, 10)]);
     w.step(['grab']);
-    expect(w.ctx.qte).toBeNull();
+    expect(w.player.qte).toBeNull();
     expect(w.p.anim).toBe('grabHold');
   });
 
@@ -420,7 +427,7 @@ describe('PlayerCombat v4 techniques', () => {
     r.step(['grab']);
     r.pc.reset();
     expect(e2.grabbedBy).toBeNull();
-    expect(r.ctx.qte).toBeNull();
+    expect(r.player.qte).toBeNull();
 
     const e3 = enemy(0, 1.5);
     const c = setup([e3]);
@@ -430,7 +437,7 @@ describe('PlayerCombat v4 techniques', () => {
     c.ctx.combat.clear();
     expect(cEnds).toEqual(['interrupted']);
     expect(e3.grabbedBy).toBeNull();
-    expect(c.ctx.qte).toBeNull();
+    expect(c.player.qte).toBeNull();
     c.step();
     expect(c.pc.currentMove).toBe('none');
   });

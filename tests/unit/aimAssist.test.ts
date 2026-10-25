@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { pickAimTarget } from '../../src/combat/aimAssist';
-import { Fighter } from '../../src/combat/Fighter';
-import { Actor } from '../../src/game/Actor';
-import type { NinjaModel } from '../../src/render/NinjaModel';
-import type { CharacterBody } from '../../src/physics/PhysicsWorld';
+import { pickAimTarget } from '../../src/sim/combat/aimAssist';
+import { Fighter } from '../../src/sim/combat/Fighter';
+import { Actor } from '../../src/sim/Actor';
+import type { CharacterBody } from '../../src/sim/physics/PhysicsWorld';
 
 const enemy = (x: number, z: number) => {
-  const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: 10, maxChakra: 0 }), {} as NinjaModel, {} as CharacterBody, 0.4, 1.8);
+  const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: 10, maxChakra: 0 }), {} as CharacterBody, 0.4, 1.8);
   e.position.set(x, 0, z);
   return e;
 };

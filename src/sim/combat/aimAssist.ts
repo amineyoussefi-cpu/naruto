@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Actor } from '../game/Actor';
+import type { Actor } from '../Actor';
 
 export interface AimAssistQuery {
   /** Camera used for projection (matrices from the last render). */

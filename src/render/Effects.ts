@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { EventBus } from '../core/events';
 import type { Vec3Like } from '../core/types';
-import type { Actor } from '../game/Actor';
+import type { ActorView as Actor } from '../game/ActorView';
 import { toon } from './toon';
 import { crackTexture, glintTexture, hexShieldTexture, impactLinesTexture, impactStarTexture } from './fx/textures';
 import { boltGeometry, commaRingGeometry, shockwaveMaterial, swirlGeometry, trailGeometry } from './fx/shapes';
@@ -743,7 +743,7 @@ export class Effects {
   private updateConcentration(dt: number): void {
     for (const [id, acc] of this.concentrating) {
       const a = this.getActor(id);
-      if (!a || !a.alive || !a.fighter.concentrating) { this.concentrating.delete(id); continue; }
+      if (!a || !a.alive || !a.concentrating) { this.concentrating.delete(id); continue; }
       let n = acc + FX.concentrateRate * dt;
       for (; n >= 1; n--) {
         const th = this.rand() * Math.PI * 2, r = FX.concentrateRadius * (0.5 + 0.5 * this.rand());

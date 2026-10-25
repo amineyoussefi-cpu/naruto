@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bestTarget, cycleTarget, screenAngle, type LockCandidate } from '../../src/camera/targeting';
+import { bestTarget, cycleTarget, screenAngle, type LockCandidate } from '../../src/sim/targeting';
 import { cameraFraming } from '../../src/camera/CameraRig';
 import { CAMERA } from '../../src/config/camera';
 

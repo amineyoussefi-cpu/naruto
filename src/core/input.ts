@@ -13,7 +13,9 @@ export type Action =
   /** Synthetic: forward pressed twice quickly (no key of its own). */
   | 'boost'
   /** Synthetic: left + right click together (see ChordDetector). */
-  | 'grab';
+  | 'grab'
+  /** Mission/arena board and revive (same key as lock-on: the client decides which one applies). */
+  | 'interact';
 
 export const KEY_BINDINGS: Record<Action, string[]> = {
   forward: ['KeyW', 'ArrowUp'],
@@ -33,6 +35,7 @@ export const KEY_BINDINGS: Record<Action, string[]> = {
   pause: ['Escape', 'KeyP'],
   boost: [],
   grab: [],
+  interact: ['KeyF'],
 };
 
 /** Key labels per layout for the help screens (UI is in French). */
@@ -41,13 +44,13 @@ export const KEY_LABELS: Record<'qwerty' | 'azerty', Record<Action, string>> = {
     forward: 'W', back: 'S', left: 'A', right: 'D', sprint: 'Maj', jump: 'Espace',
     attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'Q / Clic molette',
     concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
-    boost: 'W W (maintenir)', grab: 'Clic gauche + droit',
+    boost: 'W W (maintenir)', grab: 'Clic gauche + droit', interact: 'F',
   },
   azerty: {
     forward: 'Z', back: 'S', left: 'Q', right: 'D', sprint: 'Maj', jump: 'Espace',
     attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'A / Clic molette',
     concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
-    boost: 'Z Z (maintenir)', grab: 'Clic gauche + droit',
+    boost: 'Z Z (maintenir)', grab: 'Clic gauche + droit', interact: 'F',
   },
 };
 

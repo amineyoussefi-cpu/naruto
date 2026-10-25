@@ -1,16 +1,15 @@
 import * as THREE from 'three';
-import { Actor } from '../../src/game/Actor';
-import { Fighter } from '../../src/combat/Fighter';
+import { Actor } from '../../src/sim/Actor';
+import { Fighter } from '../../src/sim/combat/Fighter';
 import { EventBus } from '../../src/core/events';
-import type { GameContext } from '../../src/game/context';
-import type { NinjaModel } from '../../src/render/NinjaModel';
-import type { CharacterBody, PhysicsWorld } from '../../src/physics/PhysicsWorld';
-import type { CombatSystem, HitboxSpec, ProjectileSpec } from '../../src/combat/CombatSystem';
+import type { PlayerState, SimContext } from '../../src/sim/context';
+import { emptyInput } from '../../src/sim/protocol';
+import type { CharacterBody, PhysicsWorld } from '../../src/sim/physics/PhysicsWorld';
+import type { CombatSystem, HitboxSpec, ProjectileSpec } from '../../src/sim/combat/CombatSystem';
 import type { ActorKind } from '../../src/core/types';
 
 export function makeActor(kind: ActorKind, x = 0, z = 0, hp = 50): Actor {
-  const model = { setTelegraph: () => {} } as unknown as NinjaModel;
-  const a = new Actor(kind, kind === 'player' ? 'player' : 'enemy', kind, new Fighter({ maxHp: hp, maxChakra: 0 }), model, {} as CharacterBody, 0.4, 1.8);
+  const a = new Actor(kind, kind === 'player' ? 'player' : 'enemy', kind, new Fighter({ maxHp: hp, maxChakra: 0 }), {} as CharacterBody, 0.4, 1.8);
   a.position.set(x, 0, z);
   a.grounded = true;
   return a;
@@ -37,17 +36,19 @@ export function makeCtx() {
     combat: { spawnHitbox: (s: HitboxSpec) => hitboxes.push(s), spawnProjectile: (s: ProjectileSpec) => projectiles.push(s) } as unknown as CombatSystem,
     time: 0,
     actors,
-    player,
+    players: new Map([[1, { id: 1, actor: player, input: emptyInput(), pressed: new Set() } as unknown as PlayerState]]),
+    rng: Math.random,
     spawnEnemy: (kind: 'melee' | 'ranged', feet: THREE.Vector3) => {
       const a = makeActor(kind, feet.x, feet.z);
       actors.push(a);
       return a;
     },
     removeActor: (a: Actor) => { a.removed = true; actors.splice(actors.indexOf(a), 1); },
+    hostiles: (me: Actor) => actors.filter((a) => a.team !== me.team && a.alive && !a.removed),
     enemies: () => actors.filter((a) => a.team === 'enemy' && a.alive && !a.removed),
     spawns: { player: new THREE.Vector3(), enemies: [new THREE.Vector3(20, 0, 0), new THREE.Vector3(-20, 0, 0), new THREE.Vector3(0, 0, 20), new THREE.Vector3(1, 0, 1)] },
     modifiers: () => ({ hpMul: 1, dmgMul: 2 }),
-  } as unknown as GameContext;
+  } as unknown as SimContext;
   return { ctx, player, hitboxes, projectiles, actors };
 }
 

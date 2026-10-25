@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EnemyAI, type EnemyState } from '../../src/ai/EnemyAI';
+import { EnemyAI, type EnemyState } from '../../src/sim/ai/EnemyAI';
 import { ENEMIES } from '../../src/config/enemies';
 import { makeActor, makeCtx } from './aiHelpers';
 
@@ -12,7 +12,7 @@ function run(ai: EnemyAI, seconds: number, each?: () => void) {
 
 describe('EnemyAI melee', () => {
   it('chases, telegraphs, attacks with scaled damage, then recovers', () => {
-    const { ctx, hitboxes, actors } = makeCtx();
+    const { ctx, player, hitboxes, actors } = makeCtx();
     const e = makeActor('melee', 0, 10);
     actors.push(e);
     const ai = new EnemyAI(ctx, never);
@@ -22,7 +22,7 @@ describe('EnemyAI melee', () => {
     ctx.events.on('telegraph', (t) => telegraphs.push(t.id));
     run(ai, 5, () => seen.add(ai.stateOf(e)));
     for (const s of ['detect', 'chase', 'attack', 'recover'] as const) expect(seen.has(s)).toBe(true);
-    expect(e.position.distanceTo(ctx.player.position)).toBeLessThan(ENEMIES.melee.attackRange + 0.5);
+    expect(e.position.distanceTo(player.position)).toBeLessThan(ENEMIES.melee.attackRange + 0.5);
     expect(hitboxes.length).toBeGreaterThan(0);
     expect(hitboxes[0]).toMatchObject({ kind: 'enemyMelee', damage: ENEMIES.melee.damage * 2, owner: e });
     expect(telegraphs[0]).toBe(e.id);
@@ -105,12 +105,12 @@ describe('EnemyAI status effects (v4)', () => {
   });
 
   it('a grabbed enemy is fully suspended (no movement, no attack, no state change)', () => {
-    const { ctx, hitboxes, actors } = makeCtx();
+    const { ctx, player, hitboxes, actors } = makeCtx();
     const e = makeActor('melee', 0, 1.5);
     actors.push(e);
     const ai = new EnemyAI(ctx, never);
     ai.register(e);
-    e.grabbedBy = ctx.player.id;
+    e.grabbedBy = player.id;
     const before = e.position.clone();
     run(ai, 2);
     expect(e.position.distanceTo(before)).toBe(0);

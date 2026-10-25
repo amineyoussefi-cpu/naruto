@@ -67,6 +67,10 @@ export const MOVEMENT = {
   safeGroundProbeLift: 0.1,
   /** Below this Y the player is respawned at the last safe position. */
   killPlaneY: -20,
+  /** Co-op downed crawl speed (m/s). */
+  crawlSpeed: 1.2,
+  /** PvP genjutsu: seconds between re-rolls of the random rotation applied to a disoriented player's movement. */
+  disorientTurn: 0.7,
   capsuleRadius: 0.4,
   capsuleHalfHeight: 0.5,
 } as const;

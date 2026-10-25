@@ -7,10 +7,10 @@ import { AudioSystem } from '../../src/audio/AudioSystem';
 import { EventBus } from '../../src/core/events';
 import { buildArena } from '../../src/world/Arena';
 import { heightAt, WORLD } from '../../src/world/terrain';
-import { PhysicsWorld } from '../../src/physics/PhysicsWorld';
+import { PhysicsWorld } from '../../src/sim/physics/PhysicsWorld';
 import type { AnimState } from '../../src/core/types';
 import { CHARACTER_LOOKS, LOOKS, pickEnemyLook } from '../../src/render/looks';
-import type { Actor } from '../../src/game/Actor';
+import type { ActorView as Actor } from '../../src/game/ActorView';
 
 const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph', 'dash', 'launched', 'substitution',
   'charge', 'chidori', 'sharingan', 'dazed', 'grabHold', 'strikeUp', 'strikeDown', 'strikeLeft', 'strikeRight', 'grabFinisher', 'grabbed'];
@@ -76,7 +76,7 @@ describe('NinjaModel poses', () => {
 describe('Effects', () => {
   it('spawns particles from events, decays them and clears', () => {
     const events = new EventBus();
-    const fx = new Effects(new THREE.Scene(), events, () => undefined as Actor | undefined);
+    const fx = new Effects(new THREE.Scene(), events, () => undefined);
     const pos = { x: 0, y: 1, z: 0 };
     events.emit('damage', { targetId: 1, sourceId: 2, amount: 5, blocked: false, killed: true, kind: 'combo1', position: pos });
     events.emit('technique', { id: 1, name: 'special', position: pos });
@@ -94,7 +94,7 @@ describe('Effects', () => {
 
   it('handles Storm events: dash trail, substitution log, air jump, launcher', () => {
     const events = new EventBus();
-    const actor = { position: new THREE.Vector3(), velocity: new THREE.Vector3(0, 0, 20), yaw: 0, anim: 'dash', alive: true, height: 1.8, fighter: { concentrating: false } } as unknown as Actor;
+    const actor = { position: new THREE.Vector3(), velocity: new THREE.Vector3(0, 0, 20), yaw: 0, anim: 'dash', alive: true, height: 1.8, concentrating: false } as unknown as Actor;
     const scene = new THREE.Scene();
     const fx = new Effects(scene, events, (id) => (id === 1 ? actor : undefined));
     events.emit('chakraDash', { id: 1, homing: true });
@@ -118,8 +118,8 @@ describe('Effects', () => {
 describe('Effects v4', () => {
   it('charges, Chidori, Sharingan and grab events spawn and clean up', () => {
     const events = new EventBus();
-    const actor = { position: new THREE.Vector3(), velocity: new THREE.Vector3(0, 0, 30), yaw: 0, anim: 'charge', alive: true, height: 1.8, fighter: { concentrating: false } } as unknown as Actor;
-    const enemy = { position: new THREE.Vector3(0, 0, 3), velocity: new THREE.Vector3(), yaw: 0, anim: 'grabbed', alive: true, height: 1.8, fighter: { concentrating: false } } as unknown as Actor;
+    const actor = { position: new THREE.Vector3(), velocity: new THREE.Vector3(0, 0, 30), yaw: 0, anim: 'charge', alive: true, height: 1.8, concentrating: false } as unknown as Actor;
+    const enemy = { position: new THREE.Vector3(0, 0, 3), velocity: new THREE.Vector3(), yaw: 0, anim: 'grabbed', alive: true, height: 1.8, concentrating: false } as unknown as Actor;
     const scene = new THREE.Scene();
     const fx = new Effects(scene, events, (id) => (id === 1 ? actor : id === 2 ? enemy : undefined));
     const pos = { x: 0, y: 1, z: 0 };

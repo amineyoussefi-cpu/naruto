@@ -1,27 +1,21 @@
 import * as THREE from 'three';
-import { COMBAT, ENEMIES, MOVEMENT, SIM_DT, WAVES, DEFAULT_SETTINGS, type Settings } from '../config';
+import { COMBAT, MOVEMENT, SIM_DT, WAVES, DEFAULT_SETTINGS, type Settings } from '../config';
 import { EventBus } from '../core/events';
 import { FixedStepper } from '../core/loop';
-import { InputManager, KEY_LABELS } from '../core/input';
-import type { ActorKind, CharacterId, GameState, HudData, QteDir } from '../core/types';
-import { PhysicsWorld } from '../physics/PhysicsWorld';
-import { Actor } from './Actor';
-import type { GameContext, SpawnModifiers } from './context';
-import { Fighter } from '../combat/Fighter';
-import { CombatSystem } from '../combat/CombatSystem';
-import { PlayerCombat } from '../combat/PlayerCombat';
-import { PlayerController } from '../player/PlayerController';
-import { CameraRig } from '../camera/CameraRig';
-import { EnemyAI } from '../ai/EnemyAI';
-import { WaveManager } from '../ai/WaveManager';
-import { NinjaModel } from '../render/NinjaModel';
-import { CHARACTER_LOOKS, NAMES, pickEnemyLook } from '../render/looks';
+import { InputManager, KEY_LABELS, type Action } from '../core/input';
+import type { CharacterId, GameState, HudData, QteDir } from '../core/types';
+import { PhysicsWorld } from '../sim/physics/PhysicsWorld';
 import { CHARACTERS } from '../config/characters';
+import { hitFeedback } from '../sim/combat/CombatSystem';
+import { actionBit, INPUT_ACTIONS, type ActorInfo, type ActorState, type PlayerInput, type ServerMsg, type Snapshot } from '../sim/protocol';
+import type { Connection } from '../net/connection';
+import { LocalHost } from '../net/LocalHost';
+import { CameraRig, type CameraHost } from '../camera/CameraRig';
 import { Effects } from '../render/Effects';
 import { buildArena, type ArenaInfo } from '../world/Arena';
 import { AudioSystem } from '../audio/AudioSystem';
 import { PostFX } from '../render/PostFX';
-
+import { ActorView, modelFor } from './ActorView';
 
 /** Keys that answer the grab sequence arrows (physical codes: WASD on QWERTY = ZQSD on AZERTY). */
 const QTE_KEYS: Record<string, QteDir> = {
@@ -55,46 +49,52 @@ export interface GameApi {
 }
 
 /**
- * Integration root: owns the renderer, the fixed-step loop, the game state machine
- * and wires all systems together. Owner: integration.
+ * The client: renderer, camera, models, effects, audio and input capture. It never decides game state:
+ * it sends one `PlayerInput` per step to its `Connection` and draws the snapshots it gets back. Owner: integration.
  */
-export class Game implements GameApi {
+export class Game implements GameApi, CameraHost {
   readonly events = new EventBus();
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly input: InputManager;
   readonly settings: Settings = { ...DEFAULT_SETTINGS };
+  readonly physics: PhysicsWorld;
   detectedLayout: 'qwerty' | 'azerty' = 'qwerty';
   state: GameState = 'menu';
 
   private readonly stepper = new FixedStepper(SIM_DT);
-  private readonly ctx: GameContext;
-  private readonly physics: PhysicsWorld;
   private readonly camera = new CameraRig();
-  private readonly combat: CombatSystem;
   private readonly fx: Effects;
   private readonly audio: AudioSystem;
-  private readonly ai: EnemyAI;
-  private readonly waves: WaveManager;
-  private readonly playerCombat: PlayerCombat;
-  private readonly playerController: PlayerController;
   private readonly arena: ArenaInfo;
-  private readonly mods = new WeakMap<Actor, SpawnModifiers>();
+  private readonly postfx: PostFX;
+  private conn: Connection;
+  private readonly viewMap = new Map<number, ActorView>();
+  private viewList: ActorView[] = [];
+  private myActorId = 0;
+  /** Latest snapshot and the one before (solo renders between them with the stepper alpha). */
+  private snap: Snapshot | null = null;
+  private prevSnap: Snapshot | null = null;
+  private prevStates = new Map<number, ActorState>();
+  private seq = 0;
+  private qteQueue: QteDir[] = [];
   private hitStop = 0;
   private endTimer = -1;
   private lastStateChange = 0;
   private fps = 60;
   private projected = new THREE.Vector3();
-  private readonly postfx: PostFX;
   /** True while the grab sequence owns the (unlocked) cursor. */
   private qteCursor = false;
 
   static async create(canvasHost: HTMLElement): Promise<Game> {
-    return new Game(canvasHost, await PhysicsWorld.create());
+    const physics = await PhysicsWorld.create();
+    const conn = await LocalHost.create('Vous', DEFAULT_SETTINGS.character);
+    return new Game(canvasHost, physics, conn);
   }
 
-  private constructor(host: HTMLElement, physics: PhysicsWorld) {
+  private constructor(host: HTMLElement, physics: PhysicsWorld, conn: Connection) {
     this.physics = physics;
+    this.conn = conn;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
@@ -107,44 +107,12 @@ export class Game implements GameApi {
     host.appendChild(this.renderer.domElement);
     this.input = new InputManager(this.renderer.domElement);
 
+    // Client copy of the world: meshes plus colliders for camera collision (and prediction online).
     this.arena = buildArena(this.scene, physics);
-    this.fx = new Effects(this.scene, this.events, (id) => this.ctx.actors.find((a) => a.id === id));
+    this.fx = new Effects(this.scene, this.events, (id) => this.viewMap.get(id));
     this.audio = new AudioSystem(this.events);
-
-    const player = this.createActor('player', this.arena.playerSpawn, { hpMul: 1, dmgMul: 1 });
-    this.ctx = {
-      scene: this.scene,
-      physics,
-      events: this.events,
-      input: this.input,
-      camera: this.camera,
-      combat: null as unknown as CombatSystem, // assigned below; systems need ctx first
-      fx: this.fx,
-      settings: this.settings,
-      pressed: new Set(),
-      time: 0,
-      actors: [player],
-      player,
-      spawnEnemy: (kind, feet, mods) => {
-        const a = this.createActor(kind, feet, mods);
-        this.ctx.actors.push(a);
-        return a;
-      },
-      removeActor: (a) => this.removeActor(a),
-      enemies: () => this.ctx.actors.filter((a) => a.team === 'enemy' && a.alive && !a.removed),
-      spawns: { player: this.arena.playerSpawn, enemies: this.arena.enemySpawns },
-      modifiers: (a) => this.mods.get(a) ?? { hpMul: 1, dmgMul: 1 },
-      character: this.settings.character,
-      qte: null,
-      qteInputs: [],
-    };
-    this.combat = this.ctx.combat = new CombatSystem(this.ctx);
-    this.camera.attach(this.ctx);
+    this.camera.attach(this);
     this.postfx = new PostFX(this.renderer, this.scene, this.camera.camera);
-    this.ai = new EnemyAI(this.ctx);
-    this.waves = new WaveManager(this.ctx, this.ai);
-    this.playerCombat = new PlayerCombat(this.ctx, player);
-    this.playerController = new PlayerController(this.ctx, player);
 
     this.input.onPause = () => {
       if (performance.now() - this.lastStateChange < 250) return;
@@ -166,15 +134,31 @@ export class Game implements GameApi {
     this.renderer.domElement.addEventListener('click', () => {
       if (this.state === 'playing' && !this.input.pointerLocked && !this.qteCursor) this.input.requestPointerLock();
     });
-    this.events.on('hitStop', (e) => { this.hitStop = Math.max(this.hitStop, e.duration); });
     this.events.on('cameraShake', (e) => this.camera.shake(e.intensity, e.duration));
+    this.events.on('hitStop', (e) => { if (!this.conn.online) this.hitStop = Math.max(this.hitStop, e.duration); });
+    this.events.on('damage', (e) => {
+      const v = this.viewMap.get(e.targetId);
+      if (v && !e.blocked) v.model.flash(COMBAT.hitFlash);
+      const fb = hitFeedback(e, this.myActorId);
+      if (!fb) return;
+      this.events.emit('hitStop', { duration: fb.hitStop });
+      this.events.emit('cameraShake', fb.shake);
+    });
     this.events.on('victory', () => { if (this.state === 'playing') this.endTimer = 1.2; });
-    this.events.on('death', (e) => { if (e.team === 'player' && this.state === 'playing') this.endTimer = 2; });
+    this.events.on('death', (e) => { if (e.id === this.myActorId && this.state === 'playing') this.endTimer = 2; });
 
     window.addEventListener('resize', () => this.resize());
     this.resize();
-    this.playerController.reset(this.arena.playerSpawn);
-    player.beginStep();
+    this.processMessages();
+  }
+
+  // ------------------------------------------------------------------ CameraHost
+
+  me(): ActorView | null { return this.viewMap.get(this.myActorId) ?? null; }
+  views(): ActorView[] { return this.viewList; }
+  hostiles(): ActorView[] {
+    const me = this.me();
+    return me ? this.viewList.filter((v) => v.team !== me.team && v.alive && !v.removed) : [];
   }
 
   get layout(): 'qwerty' | 'azerty' {
@@ -185,33 +169,87 @@ export class Game implements GameApi {
     return KEY_LABELS[this.layout];
   }
 
-  private createActor(kind: ActorKind, feet: THREE.Vector3, mods: SpawnModifiers): Actor {
-    const stats = kind === 'player'
-      ? { maxHp: COMBAT.player.maxHp, maxChakra: COMBAT.player.maxChakra }
-      : { maxHp: Math.round(ENEMIES[kind].maxHp * mods.hpMul), maxChakra: 0 };
-    const fighter = new Fighter(stats, COMBAT.guardDamageFactor);
-    const model = new NinjaModel(kind === 'player' ? CHARACTER_LOOKS[this.settings.character] : pickEnemyLook(kind));
-    this.scene.add(model.root);
-    const body = this.physics.createCharacter(feet, MOVEMENT.capsuleRadius, MOVEMENT.capsuleHalfHeight);
-    const name = kind === 'player' ? 'You' : NAMES[kind][Math.floor(Math.random() * NAMES[kind].length)];
-    const height = 2 * (MOVEMENT.capsuleHalfHeight + MOVEMENT.capsuleRadius);
-    const a = new Actor(kind, kind === 'player' ? 'player' : 'enemy', name, fighter, model, body, MOVEMENT.capsuleRadius, height);
-    a.position.copy(feet);
-    a.prevPosition.copy(feet);
-    this.mods.set(a, mods);
-    return a;
+  // ------------------------------------------------------------------ messages / snapshots
+
+  private processMessages(): void {
+    for (const m of this.conn.poll()) this.handle(m);
   }
 
-  private removeActor(a: Actor): void {
-    if (a.removed) return;
-    a.removed = true;
-    this.ai.unregister(a);
-    this.physics.removeCharacter(a.body);
-    a.model.dispose();
-    const i = this.ctx.actors.indexOf(a);
-    if (i >= 0) this.ctx.actors.splice(i, 1);
-    if (this.camera.lockTarget === a) this.camera.lockTarget = null;
+  private handle(m: ServerMsg): void {
+    if (m.t === 'welcome') {
+      this.myActorId = m.actorId;
+      for (const info of m.actors) this.addView(info);
+    } else if (m.t === 'actors') {
+      for (const info of m.add) this.addView(info);
+      for (const id of m.remove) this.removeView(id);
+    } else if (m.t === 'snapshot') {
+      this.applySnapshot(m.snap);
+    }
   }
+
+  private addView(info: ActorInfo): void {
+    const old = this.viewMap.get(info.id);
+    if (old) {
+      if (old.look !== info.look) {
+        old.look = info.look;
+        old.setModel(modelFor(info));
+        this.scene.add(old.model.root);
+      }
+      return;
+    }
+    const v = new ActorView(info);
+    this.scene.add(v.model.root);
+    this.viewMap.set(info.id, v);
+    this.viewList = [...this.viewMap.values()];
+  }
+
+  private removeView(id: number): void {
+    const v = this.viewMap.get(id);
+    if (!v) return;
+    v.dispose();
+    this.viewMap.delete(id);
+    this.viewList = [...this.viewMap.values()];
+    if (this.camera.lockTarget === v) this.camera.lockTarget = null;
+  }
+
+  private applySnapshot(s: Snapshot): void {
+    this.prevSnap = this.snap;
+    this.prevStates.clear();
+    if (this.prevSnap) for (const a of this.prevSnap.actors) this.prevStates.set(a.id, a);
+    this.snap = s;
+    for (const a of s.actors) this.viewMap.get(a.id)?.apply(a, a, 1);
+    for (const e of s.events) this.events.emit(e.type, e.payload as never);
+    this.syncQteCursor();
+  }
+
+  /** Views between the previous and the latest snapshot. */
+  private interpolate(alpha: number): void {
+    if (!this.snap) return;
+    for (const a of this.snap.actors) this.viewMap.get(a.id)?.apply(this.prevStates.get(a.id) ?? a, a, alpha);
+  }
+
+  // ------------------------------------------------------------------ input
+
+  /** One client step of local input as a PlayerInput (camera lock-on is chosen here, validated by the sim). */
+  private buildInput(): PlayerInput {
+    const pressed = this.input.consumePressed();
+    const lockPressed = new Set<Action>(pressed);
+    this.camera.updateSim(lockPressed);
+    let held = 0, press = 0;
+    for (const a of INPUT_ACTIONS) {
+      if (this.input.isHeld(a)) held |= actionBit(a);
+      if (pressed.has(a)) press |= actionBit(a);
+    }
+    const axes = this.input.moveAxes();
+    const dir = this.camera.camera.getWorldDirection(new THREE.Vector3());
+    return {
+      seq: ++this.seq, moveX: axes.x, moveZ: axes.y, camYaw: this.camera.yaw, camPitch: this.camera.pitch,
+      held, pressed: press, aimDir: { x: dir.x, y: dir.y, z: dir.z }, lockId: this.camera.lockTarget?.id ?? 0,
+      qte: this.qteQueue.shift() ?? null,
+    };
+  }
+
+  // ------------------------------------------------------------------ state machine
 
   private setState(s: GameState): void {
     if (s === this.state) return;
@@ -232,24 +270,20 @@ export class Game implements GameApi {
   }
 
   get character(): CharacterId {
-    return this.ctx.character;
+    return this.settings.character;
   }
 
-  /** Swaps the player's model; only between runs (menu / end screens) so a fight never changes character. */
+  /** Changes the player's character; only between runs (menu / end screens) so a fight never changes character. */
   selectCharacter(id: CharacterId): void {
     this.settings.character = id;
-    if (id === this.ctx.character || this.state === 'playing' || this.state === 'paused') return;
-    this.ctx.character = id;
-    const p = this.ctx.player;
-    p.model.dispose();
-    p.model = new NinjaModel(CHARACTER_LOOKS[id]);
-    this.scene.add(p.model.root);
-    p.syncModel(1, 0);
+    if (this.state === 'playing' || this.state === 'paused') return;
+    this.conn.send({ t: 'character', character: id });
+    this.processMessages();
   }
 
   qteInput(dir: QteDir): void {
-    const q = this.ctx.qte;
-    if (this.state === 'playing' && q && !q.done) this.ctx.qteInputs.push(dir);
+    const q = this.snap?.you?.qte;
+    if (this.state === 'playing' && q && !q.done) this.qteQueue.push(dir);
   }
 
   uiClick(): void {
@@ -257,11 +291,16 @@ export class Game implements GameApi {
     this.audio.playUiClick();
   }
 
+  /** Solo only: the in-process host (restart, waves, debug). */
+  private get local(): LocalHost | null {
+    return this.conn instanceof LocalHost ? this.conn : null;
+  }
+
   start(): void {
     this.resetWorld();
     this.setState('playing');
     this.userGesture();
-    this.waves.start();
+    this.local?.waves.start();
   }
 
   pause(): void {
@@ -294,94 +333,52 @@ export class Game implements GameApi {
     this.renderer.shadowMap.enabled = s.graphics === 'high';
   }
 
-  /** Removes every transient object and restores the player: no state survives a restart. */
+  /** Solo restart: the simulation resets, the client drops every transient effect. */
   private resetWorld(): void {
-    for (const a of [...this.ctx.actors]) if (a !== this.ctx.player) this.removeActor(a);
-    this.ai.clear();
-    this.combat.clear();
-    this.ctx.qte = null;
-    this.ctx.qteInputs.length = 0;
+    const local = this.local;
+    if (local) {
+      local.sim.reset();
+      local.waves.reset();
+      local.flush();
+    }
+    this.qteQueue.length = 0;
     this.qteCursor = false;
     this.fx.clear();
-    this.waves.reset();
-    const p = this.ctx.player;
-    p.fighter.reset();
-    p.knockback.set(0, 0, 0);
-    p.velocity.set(0, 0, 0);
-    p.climbing = false;
-    p.deadTime = 0;
-    p.yaw = 0;
-    p.setAnim('idle', true);
-    p.resetControl();
-    this.playerCombat.reset();
-    this.playerController.reset(this.arena.playerSpawn);
-    p.onWater = false;
-    p.disoriented = 0;
-    p.grabbedBy = null;
-    p.beginStep();
     this.camera.reset();
-    this.ctx.time = 0;
     this.hitStop = 0;
     this.endTimer = -1;
     this.stepper.reset();
     this.input.releaseAll();
+    this.processMessages();
+    this.prevSnap = null;
+    this.prevStates.clear();
   }
 
-  /** One fixed simulation step. Never called while paused. */
-  step(dt: number): void {
-    const ctx = this.ctx;
-    ctx.pressed = this.input.consumePressed();
-    ctx.time += dt;
-    for (const a of ctx.actors) {
-      a.beginStep();
-      a.animTime += dt;
-    }
-    this.camera.updateSim(dt);
-    this.playerCombat.update(dt);
-    this.playerController.update(dt);
-    this.ai.update(dt);
-    for (const a of ctx.actors) {
-      a.onWater = a.alive && a.grounded && this.physics.isWater(a.position);
-      a.disoriented = Math.max(0, a.disoriented - dt);
-    }
-    this.combat.update(dt);
-    this.fx.update(dt);
-    this.waves.update(dt);
-    for (const a of [...ctx.actors]) {
-      if (a.team !== 'enemy') continue;
-      if (!a.alive) {
-        a.deadTime += dt;
-        if (a.deadTime > ENEMIES.corpseTime) this.removeActor(a);
-      } else if (a.position.y < MOVEMENT.killPlaneY) {
-        const s = ctx.spawns.enemies[a.id % ctx.spawns.enemies.length];
-        this.physics.teleport(a.body, s);
-        a.position.copy(s);
-        a.prevPosition.copy(s);
-        a.velocity.set(0, 0, 0);
-      }
-    }
-    this.physics.step();
-    this.syncQteCursor();
+  /** One client step: send input (solo: the simulation steps right away) and apply what came back. */
+  private step(dt: number): void {
+    this.conn.sendInput(this.buildInput());
+    this.processMessages();
     if (this.endTimer > 0) {
       this.endTimer -= dt;
-      if (this.endTimer <= 0) this.setState(ctx.player.alive ? 'victory' : 'defeat');
+      if (this.endTimer <= 0) this.setState(this.me()?.alive ? 'victory' : 'defeat');
     }
   }
 
   /** Frees the cursor while a grab sequence waits for arrow clicks; recaptures it when the sequence ends. */
   private syncQteCursor(): void {
-    const q = this.ctx.qte;
+    const q = this.snap?.you?.qte;
     const want = !!q && !q.done;
     if (want === this.qteCursor) return;
     this.qteCursor = want;
     this.input.releaseAll(); // no click or key carries over between the arrows and the fight
     if (want) this.input.exitPointerLock();
-    else this.input.requestPointerLock(); // the last arrow click is the user gesture; else the next canvas click relocks
+    else if (this.state === 'playing') this.input.requestPointerLock(); // the last arrow click is the user gesture
   }
 
   /** Called every animation frame with real elapsed seconds. */
   frame(frameDt: number): void {
     if (frameDt > 0) this.fps += (1 / frameDt - this.fps) * 0.05;
+    const me = this.me();
     if (this.state === 'playing') {
       let steps = this.stepper.advance(frameDt);
       while (steps-- > 0) {
@@ -389,15 +386,16 @@ export class Game implements GameApi {
         this.step(SIM_DT);
         if (this.state !== 'playing') break;
       }
-      const alpha = this.stepper.alpha;
-      for (const a of this.ctx.actors) a.syncModel(alpha, frameDt);
-      this.camera.update(frameDt, alpha);
-      this.arena.update?.(this.ctx.player.model.root.position, frameDt);
+      this.interpolate(this.stepper.alpha);
+      for (const v of this.viewList) v.syncModel(frameDt);
+      this.camera.update(frameDt, this.stepper.alpha);
+      if (me) this.arena.update?.(me.model.root.position, frameDt);
     } else if (this.state === 'menu') {
       // Idle showcase: models animate, nothing simulates.
-      for (const a of this.ctx.actors) a.syncModel(1, frameDt);
+      this.interpolate(1);
+      for (const v of this.viewList) v.syncModel(frameDt);
       this.camera.update(frameDt, 1);
-      this.arena.update?.(this.ctx.player.model.root.position, frameDt);
+      if (me) this.arena.update?.(me.model.root.position, frameDt);
     } else {
       // Paused / ended: frozen frame, still re-rendered so the UI overlay stays live.
       this.camera.update(0, 1);
@@ -406,14 +404,14 @@ export class Game implements GameApi {
     this.postfx.render(frameDt);
   }
 
-  /** Anime speed lines while sprinting or in a forced dash/dodge; eased so they fade in and out. */
+  /** Anime speed lines while sprinting or in a dash/dodge; eased so they fade in and out. */
   private updateSpeedLines(frameDt: number): void {
-    const p = this.ctx.player;
+    const p = this.me();
     let target = 0;
-    if (this.state === 'playing' && p.alive) {
+    if (this.state === 'playing' && p && p.alive) {
       const speed = Math.hypot(p.velocity.x, p.velocity.z);
       target = THREE.MathUtils.clamp((speed - MOVEMENT.runSpeed) / (MOVEMENT.sprintSpeed - MOVEMENT.runSpeed), 0, 1);
-      if (p.control.forcedVelocity && p.control.forcedVelocity.lengthSq() > MOVEMENT.sprintSpeed ** 2) target = 1;
+      if (p.has('busy') && speed > MOVEMENT.sprintSpeed) target = 1;
     }
     if (frameDt > 0) this.postfx.speedLines += (target - this.postfx.speedLines) * (1 - Math.exp(-8 * frameDt));
   }
@@ -425,56 +423,50 @@ export class Game implements GameApi {
     this.postfx?.setSize(w, h);
   }
 
-  /** HUD slot for the character's E technique (cost / cooldown depend on the character). */
-  private specialSlot(cd: (id: 'special', label: string, key: string, total: number, cost: number) => HudData['cooldowns'][number], key: string) {
-    const c = CHARACTERS[this.ctx.character];
-    const cfg = c.special === 'sharingan' ? COMBAT.sharingan : c.special === 'chidori' ? COMBAT.chidori : COMBAT.special;
-    return cd('special', c.specialLabel, key, cfg.cooldown, cfg.chakraCost);
-  }
-
   getHudData(): HudData {
-    const p = this.ctx.player;
-    const f = p.fighter;
+    const p = this.me();
+    const you = this.snap?.you ?? null;
     const labels = this.keyLabels;
-    const cd = (id: 'special' | 'kunai' | 'dodge', label: string, key: string, total: number, cost: number) => ({
-      id, label, key, total, chakraCost: cost,
-      remaining: f.cooldownRemaining(id),
-      usable: f.cooldownReady(id) && f.chakra >= cost,
-    });
+    const chakra = p?.chakra ?? 0;
+    const c = CHARACTERS[this.settings.character];
+    const special = c.special === 'sharingan' ? COMBAT.sharingan : c.special === 'chidori' ? COMBAT.chidori : COMBAT.special;
+    const cd = (id: 'special' | 'kunai' | 'dodge', label: string, key: string, total: number, cost: number) => {
+      const remaining = you?.cooldowns[id] ?? 0;
+      return { id, label, key, total, chakraCost: cost, remaining, usable: remaining <= 0 && chakra >= cost };
+    };
     const cam = this.camera.camera;
     const w = window.innerWidth, h = window.innerHeight;
     const enemyBars: HudData['enemyBars'] = [];
-    for (const a of this.ctx.actors) {
-      if (a.team !== 'enemy' || !a.alive || a.removed) continue;
+    for (const a of this.hostiles()) {
       const locked = this.camera.lockTarget === a;
-      if (!locked && a.position.distanceTo(p.position) > 22) continue;
+      if (!p || (!locked && a.position.distanceTo(p.position) > 22)) continue;
       this.projected.copy(a.model.root.position).setY(a.model.root.position.y + a.height + 0.45).project(cam);
       if (this.projected.z > 1 || Math.abs(this.projected.x) > 1.1 || Math.abs(this.projected.y) > 1.1) continue;
       enemyBars.push({
-        id: a.id,
-        x: (this.projected.x * 0.5 + 0.5) * w,
-        y: (-this.projected.y * 0.5 + 0.5) * h,
-        hp: a.fighter.hp,
-        maxHp: a.fighter.maxHp,
-        telegraph: this.ai.isTelegraphing(a),
-        locked,
+        id: a.id, x: (this.projected.x * 0.5 + 0.5) * w, y: (-this.projected.y * 0.5 + 0.5) * h,
+        hp: a.hp, maxHp: a.maxHp, telegraph: a.has('telegraph'), locked,
       });
     }
     const t = this.camera.lockTarget;
+    const waves = this.local?.waves;
     return {
-      player: { hp: f.hp, maxHp: f.maxHp, chakra: f.chakra, maxChakra: f.maxChakra, concentrating: f.concentrating, guarding: f.guarding, climbing: p.climbing, substitution: f.substitution, maxSubstitution: f.maxSubstitution, character: this.ctx.character },
-      charge: this.playerCombat.charge,
-      qte: this.ctx.qte,
+      player: {
+        hp: p?.hp ?? 0, maxHp: p?.maxHp ?? 1, chakra, maxChakra: p?.maxChakra ?? 1,
+        concentrating: p?.concentrating ?? false, guarding: p?.has('guard') ?? false, climbing: p?.climbing ?? false,
+        substitution: you?.substitution ?? 0, maxSubstitution: you?.maxSubstitution ?? 1, character: this.settings.character,
+      },
+      charge: you?.charge ?? null,
+      qte: you?.qte ?? null,
       cooldowns: [
-        this.specialSlot(cd, labels.special),
+        cd('special', c.specialLabel, labels.special, special.cooldown, special.chakraCost),
         cd('kunai', 'Kunai', labels.kunai.split(' ')[0], COMBAT.kunai.cooldown, 0),
         cd('dodge', 'Esquive', labels.dodge, COMBAT.dodge.cooldown, 0),
       ],
-      wave: this.waves.wave,
+      wave: waves?.wave ?? 0,
       totalWaves: WAVES.length,
-      enemiesRemaining: this.waves.remaining,
-      intermission: this.waves.intermission,
-      lockTarget: t && t.alive ? { name: t.name, hp: t.fighter.hp, maxHp: t.fighter.maxHp } : null,
+      enemiesRemaining: waves?.remaining ?? 0,
+      intermission: waves?.intermission ?? 0,
+      lockTarget: t && t.alive ? { name: t.name, hp: t.hp, maxHp: t.maxHp } : null,
       enemyBars,
       fps: this.fps,
     };
@@ -482,6 +474,10 @@ export class Game implements GameApi {
 
   /** Test hook: exposes internals to Playwright in dev/preview builds. */
   debug() {
-    return { ctx: this.ctx, waves: this.waves, ai: this.ai, camera: this.camera };
+    const local = this.local;
+    const sim = local?.sim;
+    const player = sim?.player(local!.playerId)?.actor;
+    // `ctx.player`: the local player's actor (fresh copy of the context fields on each call).
+    return { sim, ctx: sim ? { ...sim.ctx, player } : undefined, waves: local?.waves, ai: sim?.ai, camera: this.camera, player, views: this.viewMap };
   }
 }

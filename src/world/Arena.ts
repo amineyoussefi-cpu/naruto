@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type RAPIER from '@dimforge/rapier3d-compat';
-import type { PhysicsWorld } from '../physics/PhysicsWorld';
+import type { PhysicsWorld } from '../sim/physics/PhysicsWorld';
 import { toon } from '../render/toon';
 import { glowMaterial } from '../render/PostFX';
 import { Batcher } from './Batcher';

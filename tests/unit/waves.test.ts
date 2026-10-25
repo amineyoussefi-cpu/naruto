@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { EnemyAI } from '../../src/ai/EnemyAI';
+import { EnemyAI } from '../../src/sim/ai/EnemyAI';
 import * as THREE from 'three';
-import { WaveManager, pickSpawnPoints } from '../../src/ai/WaveManager';
+import { WaveManager, pickSpawnPoints } from '../../src/sim/ai/WaveManager';
 import { WAVES } from '../../src/config/waves';
 import { makeCtx, seeded } from './aiHelpers';
 

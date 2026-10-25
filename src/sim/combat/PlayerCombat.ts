@@ -1,9 +1,12 @@
 import * as THREE from 'three';
-import { COMBAT } from '../config/combat';
-import { CHARACTERS } from '../config/characters';
-import type { AnimState, AttackKind, ChargeTechnique, QteDir, QteState } from '../core/types';
-import type { Actor } from '../game/Actor';
-import type { GameContext } from '../game/context';
+import { COMBAT } from '../../config/combat';
+import { CHARACTERS } from '../../config/characters';
+import { PVP } from '../../config/pvp';
+import type { AnimState, AttackKind, ChargeTechnique, QteDir, QteState } from '../../core/types';
+import type { Actor } from '../Actor';
+import type { PlayerState, SimContext } from '../context';
+import { CAMERA } from '../../config/camera';
+import { hasBit, ORB_CHIDORI, ORB_NONE, ORB_RASENGAN, type InputAction } from '../protocol';
 import { pickAimTarget } from './aimAssist';
 import { createQte, qteApply, qteFinish, qteTick, randomArrows } from './grab';
 
@@ -36,7 +39,6 @@ export class PlayerCombat {
   private prevConcentrating = false;
   /** Set when concentration is interrupted by a hit; cleared once the key is released. */
   private concentrateLocked = false;
-  private visuals = { guard: false, aura: false, orb: false, sharingan: false };
   /** Technique being charged (move 'charge'). */
   private chargeTech: ChargeTechnique = 'rasengan';
   /** Power (minPower..1) of the released Rasengan / Chidori. */
@@ -60,7 +62,15 @@ export class PlayerCombat {
   private readonly tmp = new THREE.Vector3();
   private readonly tmp2 = new THREE.Vector3();
 
-  constructor(private readonly ctx: GameContext, private readonly actor: Actor) {}
+  private readonly actor: Actor;
+
+  constructor(private readonly ctx: SimContext, private readonly player: PlayerState) {
+    this.actor = player.actor;
+  }
+
+  private held(a: InputAction): boolean { return hasBit(this.player.input.held, a); }
+  private get pressed() { return this.player.pressed; }
+  private get camYaw(): number { return this.player.input.camYaw; }
 
   /** Active Rasengan/Chidori charge for the HUD (level 0..1 = progress to full power), null when not charging. */
   get charge(): { technique: ChargeTechnique; level: number } | null {
@@ -75,30 +85,30 @@ export class PlayerCombat {
   get currentMove(): Move { return this.move; }
 
   update(dt: number): void {
-    const a = this.actor, f = a.fighter, c = a.control, input = this.ctx.input;
-    const qteInputs = this.ctx.qteInputs.splice(0); // consumed every step, even when no grab is running
-    if (this.qteOutro > 0 && (this.qteOutro -= dt) <= 0 && this.ctx.qte === this.qte) this.ctx.qte = this.qte = null;
+    const a = this.actor, f = a.fighter, c = a.control, pl = this.player;
+    const qteInputs = pl.qteInputs.splice(0); // consumed every step, even when no grab is running
+    if (this.qteOutro > 0 && (this.qteOutro -= dt) <= 0 && pl.qte === this.qte) pl.qte = this.qte = null;
     if (this.sharinganTime > 0 && (this.sharinganTime -= dt) <= 0) this.setSharingan(false);
-    if (this.grabTarget && this.ctx.qte !== this.qte) this.dropGrab(); // cleared by CombatSystem.clear()
+    if (this.grabTarget && pl.qte !== this.qte) this.dropGrab(); // cleared by CombatSystem.clear()
     a.resetControl();
     this.prevConcentrating = this.concentrating;
     if (this.concentrating && !f.concentrating) this.concentrateLocked = true; // a hit cleared it
-    if (!input.isHeld('concentrate')) this.concentrateLocked = false;
+    if (!this.held('concentrate')) this.concentrateLocked = false;
     f.guarding = false;
     f.concentrating = false;
     this.concentrating = false;
-    if (this.ctx.pressed.has('attack')) this.attackBuffer = COMBAT.inputBuffer;
+    if (this.pressed.has('attack')) this.attackBuffer = COMBAT.inputBuffer;
     else this.attackBuffer = Math.max(0, this.attackBuffer - dt);
-    this.specialBuffer = this.ctx.pressed.has('special') ? COMBAT.inputBuffer : Math.max(0, this.specialBuffer - dt);
-    if (!input.isHeld('special') && !this.ctx.pressed.has('special')) this.specialLatch = false;
-    this.kunaiBuffer = this.ctx.pressed.has('kunai') ? COMBAT.inputBuffer : Math.max(0, this.kunaiBuffer - dt);
+    this.specialBuffer = this.pressed.has('special') ? COMBAT.inputBuffer : Math.max(0, this.specialBuffer - dt);
+    if (!this.held('special') && !this.pressed.has('special')) this.specialLatch = false;
+    this.kunaiBuffer = this.pressed.has('kunai') ? COMBAT.inputBuffer : Math.max(0, this.kunaiBuffer - dt);
 
-    if (a.alive && f.stunned && this.ctx.pressed.has('dodge')) this.trySubstitution();
+    if (a.alive && f.stunned && this.pressed.has('dodge')) this.trySubstitution();
     if (!a.alive || f.stunned) {
       this.cancel();
       c.allowMove = c.allowJump = false;
       c.animLocked = true;
-      if (!a.alive) a.setAnim('dead');
+      if (!a.alive) a.setAnim(a.downed > 0 ? 'downed' : 'dead');
       else if (a.anim !== 'hit' && a.anim !== 'launched') a.setAnim('hit', true);
       return;
     }
@@ -116,9 +126,9 @@ export class PlayerCombat {
     if (this.move === 'attack') {
       const hit = COMBAT.combo[this.comboIndex];
       const inRecovery = this.t >= hit.windup + hit.active;
-      const wantsTechnique = this.wantsSpecial() || (this.kunaiBuffer > 0 && f.cooldownReady('kunai')) || this.ctx.pressed.has('grab');
-      const wantsDash = this.ctx.pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range) !== null;
-      if (inRecovery && ((this.ctx.pressed.has('dodge') && f.cooldownReady('dodge')) || wantsTechnique || wantsDash)) {
+      const wantsTechnique = this.wantsSpecial() || (this.kunaiBuffer > 0 && f.cooldownReady('kunai')) || this.pressed.has('grab');
+      const wantsDash = this.pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range) !== null;
+      if (inRecovery && ((this.pressed.has('dodge') && f.cooldownReady('dodge')) || wantsTechnique || wantsDash)) {
         this.endMove();
         this.comboIndex = 0;
       }
@@ -132,6 +142,7 @@ export class PlayerCombat {
     this.runMove(dt, qteInputs);
     this.setVisuals(f.guarding, f.concentrating);
     this.syncOrb();
+    pl.charge = this.charge;
   }
 
   /** True while the player is climbing a wall is decided by movement; combat reads actor.climbing. */
@@ -147,9 +158,9 @@ export class PlayerCombat {
     this.approach = 0;
     this.concentrating = false;
     this.concentrateLocked = false;
-    if (this.grabTarget && this.ctx.qte === this.qte) this.endGrab();
+    if (this.grabTarget && this.player.qte === this.qte) this.endGrab();
     this.dropGrab();
-    if (this.ctx.qte === this.qte) this.ctx.qte = null;
+    if (this.player.qte === this.qte) this.player.qte = null;
     this.qte = null;
     this.qteOutro = this.recovery = 0;
     this.sharinganTime = 0;
@@ -159,15 +170,15 @@ export class PlayerCombat {
   }
 
   private startFromInput(): void {
-    const a = this.actor, f = a.fighter, pressed = this.ctx.pressed, input = this.ctx.input;
+    const a = this.actor, f = a.fighter, pressed = this.pressed;
     if (pressed.has('dodge') && f.cooldownReady('dodge')) return this.startDodge();
     // Shift only chakra-dashes when there is someone to rush at; otherwise it is a free sprint (movement).
     if (pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range)) return this.startDash();
-    if (pressed.has('grab') && this.ctx.qte === null) return this.startGrab();
+    if (pressed.has('grab') && this.player.qte === null) return this.startGrab();
     if (this.wantsSpecial()) {
       this.specialBuffer = 0;
       this.specialLatch = true;
-      const special = CHARACTERS[this.ctx.character].special;
+      const special = CHARACTERS[this.player.character].special;
       return special === 'sharingan' ? this.startSharingan() : this.startCharge(special);
     }
     if (this.kunaiBuffer > 0 && f.cooldownReady('kunai')) {
@@ -182,12 +193,12 @@ export class PlayerCombat {
       return;
     }
     if (!a.grounded) return;
-    if (input.isHeld('guard')) {
+    if (this.held('guard')) {
       f.guarding = true;
       a.setAnim('guard');
       a.control.moveFactor = COMBAT.guardMoveFactor;
       a.control.animLocked = true;
-    } else if (input.isHeld('concentrate') && !this.concentrateLocked) {
+    } else if (this.held('concentrate') && !this.concentrateLocked) {
       if (!this.prevConcentrating) this.ctx.events.emit('concentrateStart', { id: a.id });
       f.concentrating = this.concentrating = true;
       a.setAnim('concentrate');
@@ -237,7 +248,7 @@ export class PlayerCombat {
       const cfg = chargeCfg(this.chargeTech);
       c.allowMove = true; // slow walk while charging (no jump)
       c.moveFactor = cfg.chargeMoveFactor;
-      if (!this.ctx.input.isHeld('special') || this.t >= cfg.maxHoldTime) this.releaseCharge();
+      if (!this.held('special') || this.t >= cfg.maxHoldTime) this.releaseCharge();
     } else if (this.move === 'chidori') {
       c.passThroughActors = true; // pierce through enemies; walls still stop the dash
       this.runChidori(dt);
@@ -293,7 +304,7 @@ export class PlayerCombat {
   /** Rasengan / Chidori: hold to charge; chakra is paid on release (a tap releases at once at minPower). */
   /** E pressed recently, or still held after another move ended (holding E always charges as soon as possible). */
   private wantsSpecial(): boolean {
-    return !this.specialLatch && (this.specialBuffer > 0 || this.ctx.input.isHeld('special'));
+    return !this.specialLatch && (this.specialBuffer > 0 || this.held('special'));
   }
 
   private startCharge(tech: ChargeTechnique): void {
@@ -337,7 +348,7 @@ export class PlayerCombat {
     const wall = this.ctx.physics.raycast(from, dir, step + a.radius + d.wallMargin, { worldOnly: true });
     if (wall) step = Math.max(0, wall.distance - a.radius - d.wallMargin);
     const y = a.position.y + COMBAT.hitboxHeight;
-    for (const e of this.ctx.enemies()) {
+    for (const e of this.ctx.hostiles(a)) {
       if (this.dashHit.has(e.id) || e.removed) continue;
       const px = e.position.x - a.position.x, pz = e.position.z - a.position.z;
       const along = Math.max(0, Math.min(step, px * dir.x + pz * dir.z));
@@ -371,9 +382,9 @@ export class PlayerCombat {
 
   private applyGenjutsu(): void {
     const a = this.actor, s = COMBAT.sharingan;
-    const targets = this.ctx.enemies().filter((e) => !e.removed && e.position.distanceTo(a.position) <= s.radius);
+    const targets = this.ctx.hostiles(a).filter((e) => !e.removed && e.position.distanceTo(a.position) <= s.radius);
     for (const e of targets) {
-      e.disoriented = s.duration;
+      e.disoriented = e.kind === 'player' ? s.duration * PVP.genjutsuScale : s.duration;
       this.ctx.combat.cancelHitboxes(e);
     }
     this.ctx.events.emit('genjutsu', { id: a.id, targets: targets.map((e) => e.id), radius: s.radius, duration: s.duration });
@@ -391,7 +402,8 @@ export class PlayerCombat {
     t.grabbedBy = a.id;
     this.ctx.combat.cancelHitboxes(t);
     this.faceActor(t);
-    this.qte = this.ctx.qte = createQte(t.id, randomArrows(g.arrows), g.time);
+    const time = t.kind === 'player' ? PVP.grabTime : g.time;
+    this.qte = this.player.qte = createQte(t.id, randomArrows(g.arrows, this.ctx.rng), time);
     this.qteOutro = 0;
     a.fighter.setInvulnerable(g.invulnerablePad);
     this.holdVictim(t);
@@ -401,18 +413,18 @@ export class PlayerCombat {
   private findGrabTarget(): Actor | null {
     const a = this.actor, g = COMBAT.grab;
     const cosHalf = Math.cos(((g.coneDeg / 2) * Math.PI) / 180);
-    const yaw = this.ctx.camera.yaw, cx = Math.sin(yaw), cz = Math.cos(yaw);
+    const yaw = this.camYaw, cx = Math.sin(yaw), cz = Math.cos(yaw);
     const px = Math.sin(a.yaw), pz = Math.cos(a.yaw);
     const dist = (e: Actor) => Math.hypot(e.position.x - a.position.x, e.position.z - a.position.z);
     const valid = (e: Actor) => {
-      if (!e.alive || e.removed || e.grabbedBy !== null || e.team === a.team) return false;
+      if (!e.alive || e.removed || e.grabbedBy !== null || e.team === a.team || (e.kind === 'player' && !PVP.allowGrab)) return false;
       const dx = e.position.x - a.position.x, dz = e.position.z - a.position.z, d = Math.hypot(dx, dz);
       return d <= g.range && (d < 1e-3 || (dx * px + dz * pz) / d >= cosHalf || (dx * cx + dz * cz) / d >= cosHalf);
     };
     const lock = this.lockTarget();
     if (lock && valid(lock)) return lock;
     let best: Actor | null = null;
-    for (const e of this.ctx.enemies()) if (valid(e) && (!best || dist(e) < dist(best))) best = e;
+    for (const e of this.ctx.hostiles(a)) if (valid(e) && (!best || dist(e) < dist(best))) best = e;
     return best;
   }
 
@@ -549,9 +561,9 @@ export class PlayerCombat {
 
   /** Camera-relative unit direction of the movement keys into `out`; false when no key is held. */
   private inputDir(out: THREE.Vector3): boolean {
-    const { x, y } = this.ctx.input.moveAxes();
+    const x = this.player.input.moveX, y = this.player.input.moveZ;
     if (x === 0 && y === 0) return false;
-    const yaw = this.ctx.camera.yaw, sx = Math.sin(yaw), cz = Math.cos(yaw);
+    const yaw = this.camYaw, sx = Math.sin(yaw), cz = Math.cos(yaw);
     out.set(sx * y - cz * x, 0, cz * y + sx * x).normalize(); // camera forward*y + right*x
     return true;
   }
@@ -579,11 +591,11 @@ export class PlayerCombat {
     const lock = this.lockTarget();
     if (lock && lock.position.distanceTo(a.position) <= range) return lock;
     const cosHalf = Math.cos(((COMBAT.homing.coneDeg / 2) * Math.PI) / 180);
-    const yaw = this.ctx.camera.yaw, cx = Math.sin(yaw), cz = Math.cos(yaw);
+    const yaw = this.camYaw, cx = Math.sin(yaw), cz = Math.cos(yaw);
     const px = Math.sin(a.yaw), pz = Math.cos(a.yaw);
     let best: Actor | null = null;
     let bestD = range;
-    for (const e of this.ctx.enemies()) {
+    for (const e of this.ctx.hostiles(a)) {
       const dx = e.position.x - a.position.x, dz = e.position.z - a.position.z;
       const d = Math.hypot(dx, dz);
       if (d > bestD) continue;
@@ -594,21 +606,22 @@ export class PlayerCombat {
   }
 
   private throwKunai(): void {
-    const a = this.actor, k = COMBAT.kunai, cam = this.ctx.camera, physics = this.ctx.physics;
+    const a = this.actor, k = COMBAT.kunai, physics = this.ctx.physics;
+    const cam = aimCamera(a.chest(), this.player.input);
     const target = this.lockTarget() ?? pickAimTarget({
-      camera: cam.camera, origin: a.chest(), forward: new THREE.Vector3(Math.sin(cam.yaw), 0, Math.cos(cam.yaw)),
-      candidates: this.ctx.enemies(), range: COMBAT.aimAssist.range, screenRadius: COMBAT.aimAssist.screenRadius,
+      camera: cam, origin: a.chest(), forward: new THREE.Vector3(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)),
+      candidates: this.ctx.hostiles(a), range: COMBAT.aimAssist.range, screenRadius: COMBAT.aimAssist.screenRadius,
       lineOfSight: (from, to) => {
         const d = to.clone().sub(from), len = d.length();
         return len < 1e-6 || !physics.raycast(from, d.divideScalar(len), len, { worldOnly: true });
       },
     });
     if (target) this.faceActor(target);
-    else a.yaw = cam.yaw;
+    else a.yaw = this.camYaw;
     const origin = a.chest().addScaledVector(a.forward(this.tmp), k.spawnForward);
     // No target: toward the reticle (camera forward, kunai max range ahead of the camera).
     const dir = target ? target.chest().sub(origin)
-      : cam.camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(k.maxRange).add(cam.camera.position).sub(origin);
+      : cam.getWorldDirection(new THREE.Vector3()).multiplyScalar(k.maxRange).add(cam.position).sub(origin);
     this.ctx.combat.spawnProjectile({
       owner: a, kind: 'kunai', origin, direction: dir.normalize(), speed: k.speed, damage: k.damage,
       radius: k.radius, maxRange: k.maxRange, knockback: k.knockback, visual: 'kunai',
@@ -649,7 +662,7 @@ export class PlayerCombat {
     if (lock) return this.faceActor(lock);
     let best: Actor | null = null;
     let bestD: number = COMBAT.autoFaceRange;
-    for (const e of this.ctx.enemies()) {
+    for (const e of this.ctx.hostiles(this.actor)) {
       const d = e.position.distanceTo(this.actor.position);
       if (d <= bestD) { best = e; bestD = d; }
     }
@@ -657,7 +670,7 @@ export class PlayerCombat {
   }
 
   private lockTarget(): Actor | null {
-    const t = this.ctx.camera.lockTarget;
+    const t = this.player.lockTarget;
     return t && t.alive && !t.removed ? t : null;
   }
 
@@ -672,21 +685,37 @@ export class PlayerCombat {
   }
 
   private setVisuals(guard: boolean, aura: boolean): void {
-    const v = this.visuals, m = this.actor.model;
-    if (v.guard !== guard) m.setGuard((v.guard = guard));
-    if (v.aura !== aura) m.setAura((v.aura = aura));
+    this.actor.vis.guard = guard;
+    this.actor.vis.aura = aura;
   }
 
   /** Hand orb while charging (level = progress) and during the Rasengan / Chidori dash (level = power). */
   private syncOrb(): void {
-    const m = this.actor.model, mv = this.move;
+    const v = this.actor.vis, mv = this.move;
     const style = mv === 'charge' ? this.chargeTech : mv === 'special' ? 'rasengan' : mv === 'chidori' ? 'chidori' : null;
-    if (style) m.setHandOrb(true, mv === 'charge' ? this.chargeLevel() : this.power, style);
-    else if (this.visuals.orb) m.setHandOrb(false);
-    this.visuals.orb = style !== null;
+    v.orb = style === 'rasengan' ? ORB_RASENGAN : style === 'chidori' ? ORB_CHIDORI : ORB_NONE;
+    v.orbLevel = style ? (mv === 'charge' ? this.chargeLevel() : this.power) : 0;
   }
 
   private setSharingan(on: boolean): void {
-    if (this.visuals.sharingan !== on) this.actor.model.setSharingan((this.visuals.sharingan = on));
+    this.actor.vis.sharingan = on;
   }
+}
+
+const aimCam = new THREE.PerspectiveCamera(CAMERA.fov, 16 / 9, 0.1, 500);
+
+/**
+ * Server-side stand-in for the player's camera: placed behind the chest along the aim direction
+ * (input.aimDir, else camYaw/camPitch), so the screen-space aim assist works without the client camera.
+ */
+export function aimCamera(chest: THREE.Vector3, input: { aimDir?: { x: number; y: number; z: number }; camYaw: number; camPitch: number }): THREE.PerspectiveCamera {
+  const d = input.aimDir
+    ? new THREE.Vector3(input.aimDir.x, input.aimDir.y, input.aimDir.z)
+    : new THREE.Vector3(Math.sin(input.camYaw) * Math.cos(input.camPitch), -Math.sin(input.camPitch), Math.cos(input.camYaw) * Math.cos(input.camPitch));
+  if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+  d.normalize();
+  aimCam.position.copy(chest).addScaledVector(d, -CAMERA.distance);
+  aimCam.lookAt(aimCam.position.clone().add(d));
+  aimCam.updateMatrixWorld(true);
+  return aimCam;
 }

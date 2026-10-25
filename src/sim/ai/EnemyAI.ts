@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { ENEMIES } from '../config/enemies';
-import type { AnimState } from '../core/types';
-import type { Actor } from '../game/Actor';
-import type { GameContext } from '../game/context';
+import { ENEMIES } from '../../config/enemies';
+import type { AnimState } from '../../core/types';
+import type { Actor } from '../Actor';
+import type { SimContext } from '../context';
 import { stepCharacter } from '../physics/locomotion';
 
 export type EnemyState = 'idle' | 'detect' | 'chase' | 'attack' | 'recover' | 'hurt' | 'dead' | 'reposition'
@@ -23,6 +23,8 @@ interface Brain {
   /** Direction of the current evasive move (reposition). */
   evadeDir: THREE.Vector3;
   evadeTime: number;
+  /** Player being fought (null = none in range / dormant). */
+  target: Actor | null;
 }
 
 const STEER_ANGLES = [Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2];
@@ -42,21 +44,22 @@ export class EnemyAI {
   /** Internal sim clock, used to stagger attack starts. */
   private clock = 0;
   private lastAttackStart = -Infinity;
-  private playerAttacked = false;
+  /** Players who started an attack this step (melee enemies nearby may dodge). */
+  private swingers = new Set<number>();
 
-  constructor(private readonly ctx: GameContext, private readonly rng: () => number = Math.random) {
-    ctx.events.on('attackStart', (e) => { if (e.id === this.ctx.player.id) this.playerAttacked = true; });
+  constructor(private readonly ctx: SimContext, private readonly rng: () => number = Math.random) {
+    ctx.events.on('attackStart', (e) => { if (this.ctx.actors.some((a) => a.id === e.id && a.kind === 'player')) this.swingers.add(e.id); });
   }
 
   register(actor: Actor): void {
     this.brains.set(actor, {
       actor, state: 'idle', t: 0, phase: 'telegraph', cooldown: 0,
-      side: this.rng() < 0.5 ? -1 : 1, strafeTimer: 0, evadeDir: new THREE.Vector3(), evadeTime: 0,
+      side: this.rng() < 0.5 ? -1 : 1, strafeTimer: 0, evadeDir: new THREE.Vector3(), evadeTime: 0, target: null,
     });
   }
 
   unregister(actor: Actor): void {
-    if (this.brains.delete(actor)) actor.model.setTelegraph(false);
+    if (this.brains.delete(actor)) actor.vis.telegraph = false;
   }
 
   /** Current state of an enemy, for HUD/debug/tests. */
@@ -69,7 +72,7 @@ export class EnemyAI {
   }
 
   /** Number of enemies currently holding an attack token. */
-  get attackers(): number {
+  get attackerCount(): number {
     let n = 0;
     for (const b of this.brains.values()) if (b.state === 'attack') n++;
     return n;
@@ -77,8 +80,8 @@ export class EnemyAI {
 
   update(dt: number): void {
     this.clock += dt;
-    const playerAttacked = this.playerAttacked;
-    this.playerAttacked = false;
+    const swingers = [...this.swingers];
+    this.swingers.clear();
     for (const b of this.brains.values()) {
       if (b.actor.removed) continue;
       if (b.actor.grabbedBy !== null) {
@@ -89,23 +92,42 @@ export class EnemyAI {
       b.t += dt;
       b.cooldown = Math.max(0, b.cooldown - dt);
       wish.set(0, 0, 0);
-      this.think(b, dt, playerAttacked);
+      b.target = this.pickTarget(b);
+      this.think(b, dt, !!b.target && swingers.includes(b.target.id));
       this.move(b, dt);
     }
   }
 
   clear(): void {
-    for (const a of this.brains.keys()) a.model.setTelegraph(false);
+    for (const a of this.brains.keys()) a.vis.telegraph = false;
     this.brains.clear();
     this.clock = 0;
     this.lastAttackStart = -Infinity;
-    this.playerAttacked = false;
+    this.swingers.clear();
+  }
+
+  /**
+   * Nearest valid player (alive, not downed, hostile, within detect range). Dormant mission enemies and
+   * enemies keep their current target while it stays valid so a group doesn't flicker between players.
+   */
+  private pickTarget(b: Brain): Actor | null {
+    const a = b.actor;
+    if (a.dormant) return null;
+    const range = a.kind === 'ranged' ? ENEMIES.ranged.detectRange : ENEMIES.melee.detectRange;
+    const valid = (p: Actor) => p.alive && !p.removed && p.downed <= 0 && p.team !== a.team && p.position.distanceTo(a.position) <= range * ENEMIES.loseTargetFactor;
+    if (b.target && valid(b.target)) return b.target;
+    let best: Actor | null = null, bestD: number = range;
+    for (const pl of this.ctx.players.values()) {
+      const p = pl.actor, d = p.position.distanceTo(a.position);
+      if (valid(p) && d <= bestD) { best = p; bestD = d; }
+    }
+    return best;
   }
 
   // --- state machine -------------------------------------------------------
 
   private setState(b: Brain, s: EnemyState): void {
-    if (b.state === 'attack' && s !== 'attack') b.actor.model.setTelegraph(false);
+    if (b.state === 'attack' && s !== 'attack') b.actor.vis.telegraph = false;
     b.state = s;
     b.t = 0;
   }
@@ -136,8 +158,8 @@ export class EnemyAI {
       if (this.rng() < ENEMIES.melee.dodgeChance && a.kind === 'melee') this.evade(b, true);
     }
 
-    const p = this.ctx.player;
-    const playerAlive = p.alive && !p.removed;
+    const p = b.target ?? a;
+    const playerAlive = b.target !== null;
     toPlayer.subVectors(p.position, a.position).setY(0);
     const dist = toPlayer.length();
     if (dist > 1e-4) toPlayer.divideScalar(dist);
@@ -197,7 +219,7 @@ export class EnemyAI {
     }
     if (dist <= m.attackRange * 0.8) {
       this.anim(b, 'idle');
-    } else if (this.attackers >= ENEMIES.maxSimultaneousAttackers || b.cooldown > 0) {
+    } else if (this.attackerCount >= ENEMIES.maxSimultaneousAttackers || b.cooldown > 0) {
       this.orbit(b, dist, m.speed * m.orbitSpeedFactor);
     } else {
       wish.copy(toPlayer).multiplyScalar(m.speed);
@@ -239,7 +261,7 @@ export class EnemyAI {
   }
 
   private tryToken(): boolean {
-    return this.attackers < ENEMIES.maxSimultaneousAttackers
+    return this.attackerCount < ENEMIES.maxSimultaneousAttackers
       && this.clock - this.lastAttackStart >= ENEMIES.attackStagger;
   }
 
@@ -249,7 +271,7 @@ export class EnemyAI {
     this.setState(b, 'attack');
     b.phase = 'telegraph';
     this.lastAttackStart = this.clock;
-    a.model.setTelegraph(true);
+    a.vis.telegraph = true;
     this.anim(b, 'telegraph', true);
     this.ctx.events.emit('telegraph', { id: a.id, duration: cfg.telegraph });
   }
@@ -263,10 +285,10 @@ export class EnemyAI {
       if (b.t < cfg.telegraph) return;
       b.phase = 'active';
       b.t = 0;
-      a.model.setTelegraph(false);
+      a.vis.telegraph = false;
       this.ctx.events.emit('attackStart', { id: a.id, kind: ranged ? 'enemyRanged' : 'enemyMelee', position: a.position });
       if (ranged) {
-        this.throwAt(a, dist, ENEMIES.ranged.damage * dmgMul);
+        if (b.target) this.throwAt(a, b.target, dist, ENEMIES.ranged.damage * dmgMul);
         this.anim(b, 'throw', true);
       } else {
         const m = ENEMIES.melee;
@@ -282,9 +304,8 @@ export class EnemyAI {
     }
   }
 
-  private throwAt(a: Actor, dist: number, damage: number): void {
+  private throwAt(a: Actor, p: Actor, dist: number, damage: number): void {
     const r = ENEMIES.ranged;
-    const p = this.ctx.player;
     const target = p.chest(tmp).addScaledVector(p.velocity, (dist / r.projectileSpeed) * r.leadFactor);
     a.chest(origin).addScaledVector(a.forward(probe), r.muzzleForward);
     const dir = target.sub(origin).normalize();

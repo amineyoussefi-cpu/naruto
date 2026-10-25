@@ -1,4 +1,4 @@
-import type { QteDir, QteState } from '../core/types';
+import type { QteDir, QteState } from '../../core/types';
 
 /** Pure grab-sequence logic (no Three.js): arrow order, inputs, timeout. Owner: combat agent. */
 export const QTE_DIRS: QteDir[] = ['up', 'down', 'left', 'right'];

@@ -1,9 +1,27 @@
 import type { AnimState } from '../core/types';
 import * as THREE from 'three';
 import { CAMERA } from '../config/camera';
-import type { Actor } from '../game/Actor';
-import type { GameContext } from '../game/context';
-import { bestTarget, cycleTarget, distanceTo, type LockCandidate, type LockView } from './targeting';
+import type { ActorView } from '../game/ActorView';
+import type { EventBus } from '../core/events';
+import type { InputManager } from '../core/input';
+import type { PhysicsWorld } from '../sim/physics/PhysicsWorld';
+import type { Settings } from '../config/settings';
+
+type Actor = ActorView;
+
+/** What the camera reads from the client. */
+export interface CameraHost {
+  readonly events: EventBus;
+  readonly physics: PhysicsWorld;
+  readonly input: InputManager;
+  readonly settings: Settings;
+  /** The local player's view (null before joining). */
+  me(): ActorView | null;
+  views(): readonly ActorView[];
+  /** Living actors hostile to the local player. */
+  hostiles(): ActorView[];
+}
+import { bestTarget, cycleTarget, distanceTo, type LockCandidate, type LockView } from '../sim/targeting';
 
 const wrap = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
@@ -19,7 +37,7 @@ export class CameraRig {
   yaw = 0;
   pitch: number = CAMERA.defaultPitch;
   lockTarget: Actor | null = null;
-  private ctx!: GameContext;
+  private ctx!: CameraHost;
   /** Id last announced through `lockOn`; detects targets cleared externally (Game.removeActor). */
   private lockedId: number | null = null;
   private lockNudge = 0;
@@ -36,20 +54,21 @@ export class CameraRig {
   private readonly look = new THREE.Vector3();
 
   /** Called once the context exists. */
-  attach(ctx: GameContext): void {
+  attach(ctx: CameraHost): void {
     this.ctx = ctx;
     // Storm-style hard cut: substitution and respawn teleport the player, so the camera jumps with it.
-    ctx.events.on('substitution', (e) => { if (e.id === ctx.player.id) this.snap = true; });
-    ctx.events.on('respawn', (e) => { if (e.id === ctx.player.id) this.snap = true; });
+    ctx.events.on('substitution', (e) => { if (e.id === ctx.me()?.id) this.snap = true; });
+    ctx.events.on('respawn', (e) => { if (e.id === ctx.me()?.id) this.snap = true; });
   }
 
-  /** Simulation step: lock-on toggle/switch, lost target handling. */
-  updateSim(_dt: number): void {
+  /** Client step: lock-on toggle/switch, lost target handling (`pressed` = this step's actions). */
+  updateSim(pressed: ReadonlySet<string>): void {
     const ctx = this.ctx;
+    if (!ctx.me()) return;
     let next: Actor | null = this.lockTarget;
-    if (ctx.pressed.has('lockOn')) {
+    if (pressed.has('lockOn')) {
       next = next ? null : this.pick(null);
-    } else if (next && ctx.pressed.has('switchTarget')) {
+    } else if (next && pressed.has('switchTarget')) {
       next = this.byId(cycleTarget(this.view(), this.candidates(false), next.id));
     } else if (next && (!next.alive || next.removed || this.distance(next) > CAMERA.lockOnRange * CAMERA.lockOnLoseFactor)) {
       next = this.pick(next.id);
@@ -67,7 +86,9 @@ export class CameraRig {
     const { dx, dy } = ctx.input.consumeMouse();
     const dPitch = dy * k * (ctx.settings.invertY ? -1 : 1);
     const target = this.lockTarget;
-    const p = ctx.player.model.root.position;
+    const me = ctx.me();
+    if (!me) return;
+    const p = me.model.root.position;
 
     if (target) {
       const t = target.model.root.position;
@@ -125,10 +146,10 @@ export class CameraRig {
   private combatTimer = 0;
 
   private updateFraming(frameDt: number): void {
-    const p = this.ctx.player;
+    const p = this.ctx.me()!;
     const speed = Math.hypot(p.velocity.x, p.velocity.z);
     const r2 = CAMERA.combatRange ** 2;
-    const cue = this.lockTarget !== null || COMBAT_ANIMS.has(p.anim) || this.ctx.actors.some((e) => e.team === 'enemy' && e.alive && !e.removed && e.position.distanceToSquared(p.position) < r2);
+    const cue = this.lockTarget !== null || COMBAT_ANIMS.has(p.anim) || this.ctx.hostiles().some((e) => e.position.distanceToSquared(p.position) < r2);
     this.combatTimer = cue ? CAMERA.combatHold : Math.max(0, this.combatTimer - frameDt);
     const f = cameraFraming(speed, this.combatTimer > 0);
     this.orbitDistance += (f.distance - this.orbitDistance) * ease(CAMERA.distanceSharpness, frameDt);
@@ -174,11 +195,11 @@ export class CameraRig {
   }
 
   private byId(id: number | null): Actor | null {
-    return id === null ? null : this.ctx.actors.find((a) => a.id === id) ?? null;
+    return id === null ? null : this.ctx.views().find((a) => a.id === id) ?? null;
   }
 
   private view(): LockView {
-    const p = this.ctx.player.position;
+    const p = this.ctx.me()!.position;
     return { x: p.x, y: p.y, z: p.z, yaw: this.yaw };
   }
 
@@ -189,8 +210,8 @@ export class CameraRig {
 
   /** Living enemies; visibility raycasts only when `checkVisibility` (acquisition). */
   private candidates(checkVisibility: boolean): LockCandidate[] {
-    const from = this.ctx.player.chest();
-    return this.ctx.enemies().filter((a) => !a.removed).map((a) => {
+    const from = this.ctx.me()!.chest();
+    return this.ctx.hostiles().filter((a) => !a.removed).map((a) => {
       let visible = true;
       if (checkVisibility) {
         const to = a.chest().sub(from);

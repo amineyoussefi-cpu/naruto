@@ -1,7 +1,8 @@
 # Shared rules for every agent
 
-You are one agent in a team building **Shinobi Arena**, a local single-player 3D ninja
-arena fighter (TypeScript, Three.js 0.170, Rapier 0.14 compat, Vite 7, Vitest 4).
+You are one agent in a team building **Shinobi Arena**, a 3D ninja fighter playable solo offline or online with up to
+6 players on a private Tailscale network (host-authoritative Node server; TypeScript, Three.js 0.170, Rapier 0.14
+compat, Vite 7, Vitest 4).
 The integration lead owns the architecture and wrote the contracts you build against.
 
 ## Hard rules
@@ -24,7 +25,19 @@ The integration lead owns the architecture and wrote the contracts you build aga
 10. Final message: what you implemented, public API additions, events emitted/consumed,
     known limitations, and any contract change requests. Keep it under 300 words.
 
-## Architecture recap
+## Simulation / client split (v5)
+11. Everything that decides game state lives in `src/sim/` and must run in Node: no `document`, `window`,
+    `WebGLRenderer`, canvas, `requestAnimationFrame`, `performance.now()` or `Math.random()` without a seedable source
+    where determinism matters. Three.js math classes (`Vector3`, `Quaternion`) are fine. A unit test imports every
+    `src/sim/**` module in Node.
+12. Gameplay reads player input only through `PlayerState.input` / `PlayerState.pressed` (`src/sim/protocol.ts`),
+    never through the keyboard or the camera. Visual state goes through `actor.vis` and events, never models.
+13. Hits, damage and spawning are decided by the simulation only (server online, `LocalHost` solo). Clients may play
+    instant feedback for their own attack start, never damage.
+14. Contracts shared between agents: `src/sim/protocol.ts`, `src/sim/context.ts`, `src/sim/world/types.ts`,
+    `src/sim/missions/types.ts`, `src/net/connection.ts`. Integration owns them; request changes in your report.
+
+## Architecture recap (v4, still valid for the client side)
 - `src/game/Game.ts` — integration root: renderer, fixed-step loop, state machine (menu/playing/paused/victory/defeat),
   spawning/removal of actors, HUD snapshot. Read it to understand call order.
 - Per simulation step order: `input.consumePressed()` → `actor.beginStep()` + `animTime += dt` →

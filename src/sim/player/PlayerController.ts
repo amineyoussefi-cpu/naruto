@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { MOVEMENT } from '../config/movement';
-import { COMBAT } from '../config/combat';
+import { MOVEMENT } from '../../config/movement';
+import { COMBAT } from '../../config/combat';
 import { stepCharacter } from '../physics/locomotion';
 import { FootstepTimer, JumpAssist, drainClimbChakra, jumpVelocity, turnToward } from './movementMath';
-import type { Actor } from '../game/Actor';
-import type { GameContext } from '../game/context';
+import type { Actor } from '../Actor';
+import type { PlayerState, SimContext } from '../context';
+import { hasBit, type InputAction } from '../protocol';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -31,7 +32,26 @@ export class PlayerController {
   private reattach = 0;
   private airJumpsLeft: number = MOVEMENT.airJumps;
 
-  constructor(private readonly ctx: GameContext, private readonly actor: Actor) {}
+  private readonly actor: Actor;
+
+  constructor(private readonly ctx: SimContext, private readonly player: PlayerState) {
+    this.actor = player.actor;
+  }
+
+  private held(a: InputAction): boolean { return hasBit(this.player.input.held, a); }
+
+  /** Camera-relative move axes of this step's input (PvP genjutsu rotates them, see `disorientAngle`). */
+  private axes(): { x: number; y: number } {
+    const i = this.player.input;
+    const ang = this.actor.disoriented > 0 ? this.disorientAngle : 0;
+    if (ang === 0) return { x: i.moveX, y: i.moveZ };
+    const c = Math.cos(ang), s = Math.sin(ang);
+    return { x: i.moveX * c - i.moveZ * s, y: i.moveX * s + i.moveZ * c };
+  }
+
+  /** Random rotation of the movement input while a player is disoriented; re-rolled every `disorientTurn` s. */
+  private disorientAngle = 0;
+  private disorientTimer = 0
 
   /** True while sprint is active (held, moving, started on the ground). */
   get isSprinting(): boolean {
@@ -42,8 +62,10 @@ export class PlayerController {
     const a = this.actor;
     const c = a.control;
     const alive = a.alive;
-    const axes = alive ? this.ctx.input.moveAxes() : { x: 0, y: 0 };
-    const jumpPressed = alive && c.allowJump && this.ctx.pressed.has('jump');
+    this.tickDisorient(dt);
+    const downed = a.downed > 0;
+    const axes = alive || downed ? this.axes() : { x: 0, y: 0 };
+    const jumpPressed = alive && c.allowJump && this.player.pressed.has('jump');
 
     if (a.climbing && (!alive || !c.allowJump)) a.climbing = false;
 
@@ -53,11 +75,11 @@ export class PlayerController {
       this.updateClimb(dt, axes, jumpPressed);
     } else {
       // Automatic: running into a climbable wall attaches (jump near a wall still works too).
-      const wantsWall = alive && c.allowMove && c.allowJump && (axes.x !== 0 || axes.y !== 0) && this.reattach <= 0;
+      const wantsWall = alive && !downed && c.allowMove && c.allowJump && (axes.x !== 0 || axes.y !== 0) && this.reattach <= 0;
       if ((wantsWall || (jumpPressed && this.reattach <= 0)) && this.tryStartClimb(axes, !jumpPressed)) {
         this.updateClimb(dt, axes, false);
       } else {
-        this.updateGround(dt, axes, jumpPressed, alive);
+        this.updateGround(dt, axes, jumpPressed, alive, downed);
       }
     }
     if (wasClimbing && !a.climbing) this.reattach = MOVEMENT.climbReattachDelay;
@@ -65,24 +87,33 @@ export class PlayerController {
     this.updateRespawn();
   }
 
+  private tickDisorient(dt: number): void {
+    if (this.actor.disoriented <= 0) { this.disorientAngle = 0; this.disorientTimer = 0; return; }
+    this.disorientTimer -= dt;
+    if (this.disorientTimer > 0) return;
+    this.disorientTimer = MOVEMENT.disorientTurn;
+    this.disorientAngle = (this.ctx.rng() * 2 - 1) * Math.PI;
+  }
+
   // ---------------------------------------------------------------- ground / air
 
-  private updateGround(dt: number, axes: { x: number; y: number }, jumpPressed: boolean, alive: boolean): void {
+  private updateGround(dt: number, axes: { x: number; y: number }, jumpPressed: boolean, alive: boolean, downed: boolean): void {
     const a = this.actor;
     const c = a.control;
-    const moving = c.allowMove && (axes.x !== 0 || axes.y !== 0);
-    const sprintHeld = alive && moving && this.ctx.input.isHeld('sprint');
+    const moving = (c.allowMove || downed) && (axes.x !== 0 || axes.y !== 0);
+    const sprintHeld = alive && moving && this.held('sprint');
     // Sprint starts on the ground and keeps its momentum through a jump.
     this.sprinting = sprintHeld && (a.grounded || this.sprinting);
-    if (alive && c.allowMove && this.ctx.pressed.has('boost') && !this.boosting) {
+    if (alive && c.allowMove && this.player.pressed.has('boost') && !this.boosting) {
       this.boosting = true;
       this.ctx.events.emit('speedBoost', { id: a.id });
     }
-    if (!this.ctx.input.isHeld('forward') || !c.allowMove) this.boosting = false;
+    if (!this.held('forward') || !c.allowMove) this.boosting = false;
     if (this.boosting) this.sprinting = true; // same ninja-run animation and footsteps, just faster
 
     this.cameraWish(axes, this.wish);
-    const speed = moving ? (this.boosting ? MOVEMENT.boostSpeed : this.sprinting ? MOVEMENT.sprintSpeed : MOVEMENT.runSpeed) * c.moveFactor : 0;
+    const speed = !moving ? 0 : downed ? MOVEMENT.crawlSpeed
+      : (this.boosting ? MOVEMENT.boostSpeed : this.sprinting ? MOVEMENT.sprintSpeed : MOVEMENT.runSpeed) * c.moveFactor;
     this.wish.multiplyScalar(moving ? speed : 0);
 
     if (a.grounded) this.airJumpsLeft = MOVEMENT.airJumps;
@@ -109,7 +140,7 @@ export class PlayerController {
     if (r.landed && r.impact >= MOVEMENT.landMinImpact) this.ctx.events.emit('land', { id: a.id, impact: r.impact });
     this.airTime = a.grounded ? 0 : this.airTime + dt;
 
-    this.updateFacing(dt, moving);
+    this.updateFacing(dt, moving, downed);
 
     const hSpeed = Math.hypot(a.velocity.x, a.velocity.z);
     if (a.grounded && hSpeed > MOVEMENT.idleSpeed) {
@@ -126,23 +157,23 @@ export class PlayerController {
 
   /** Unit camera-relative direction from input axes (zero when no input). D moves screen-right. */
   private cameraWish(axes: { x: number; y: number }, out: THREE.Vector3): THREE.Vector3 {
-    const yaw = this.ctx.camera.yaw;
+    const yaw = this.player.input.camYaw;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     // forward = (sin, 0, cos); screen-right = forward × up = (-cos, 0, sin)
     return out.set(fx * axes.y - fz * axes.x, 0, fz * axes.y + fx * axes.x);
   }
 
-  private updateFacing(dt: number, moving: boolean): void {
+  private updateFacing(dt: number, moving: boolean, downed: boolean): void {
     const a = this.actor;
     const c = a.control;
     const step = MOVEMENT.turnSpeed * dt;
-    const lock = this.ctx.camera.lockTarget;
+    const lock = this.player.lockTarget;
     let target: number | null = null;
     // Combat owns yaw during forced moves (lunge/dash face forward already; a back-dodge must not spin).
     if (c.forcedVelocity) return;
     if (lock && lock.alive && !this.sprinting && a.alive) {
       target = Math.atan2(lock.position.x - a.position.x, lock.position.z - a.position.z);
-    } else if (moving && a.alive) {
+    } else if (moving && (a.alive || downed)) {
       target = Math.atan2(this.wish.x, this.wish.z);
     }
     if (target !== null) a.yaw = turnToward(a.yaw, target, step);

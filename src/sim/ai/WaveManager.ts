@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { WAVES, WAVE_INTERMISSION, WAVE_SPAWN_JITTER, WAVE_SPAWN_MAX_DIST, WAVE_SPAWN_MIN_DIST, WAVE_SPAWN_STAGGER, WAVE_START_DELAY } from '../config/waves';
-import type { GameContext } from '../game/context';
+import { WAVES, WAVE_INTERMISSION, WAVE_SPAWN_JITTER, WAVE_SPAWN_MAX_DIST, WAVE_SPAWN_MIN_DIST, WAVE_SPAWN_STAGGER, WAVE_START_DELAY } from '../../config/waves';
+import type { SimContext } from '../context';
 import type { EnemyAI } from './EnemyAI';
 
 type Phase = 'idle' | 'intermission' | 'fighting' | 'done';
@@ -20,7 +20,10 @@ export class WaveManager {
   private spawnIndex = 0;
   private lastRemaining = -1;
 
-  constructor(private readonly ctx: GameContext, private readonly ai: EnemyAI, private readonly rng: () => number = Math.random) {}
+  constructor(private readonly ctx: SimContext, private readonly ai: EnemyAI, private readonly rng: () => number = Math.random) {}
+
+  /** First player: waves spawn around it (solo legacy mode). */
+  private anchor() { return this.ctx.players.values().next().value?.actor; }
 
   /** Living enemies plus those still waiting to spawn in this wave. */
   get remaining(): number { return this.ctx.enemies().length + this.queue.length; }
@@ -32,7 +35,7 @@ export class WaveManager {
   }
 
   update(dt: number): void {
-    if (this.phase === 'idle' || this.phase === 'done' || !this.ctx.player.alive) return;
+    if (this.phase === 'idle' || this.phase === 'done' || !this.anchor()?.alive) return;
     if (this.phase === 'intermission') {
       this.intermission = Math.max(0, this.intermission - dt);
       if (this.intermission <= 0) this.beginWave();
@@ -89,7 +92,7 @@ export class WaveManager {
   }
 
   private spawn(kind: 'melee' | 'ranged'): void {
-    const p = this.ctx.player.position;
+    const p = this.anchor()?.position ?? this.ctx.spawns.player;
     const pts = pickSpawnPoints(this.ctx.spawns.enemies, p, WAVE_SPAWN_MIN_DIST, WAVE_SPAWN_MAX_DIST);
     const base = pts[this.spawnIndex++ % pts.length];
     const ang = this.rng() * Math.PI * 2;

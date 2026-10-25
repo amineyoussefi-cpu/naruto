@@ -49,6 +49,8 @@ export const ENEMIES = {
   dodgeReactRange: 4,
   /** Genjutsu daze: wander speed fraction and seconds between random direction changes. */
   dazedSpeedFactor: 0.25, dazedTurnTime: 1.2,
+  /** A target is kept until it goes beyond detectRange × this factor (no flicker between players). */
+  loseTargetFactor: 1.3,
   /** Max time spent retreating in `reposition` before re-evaluating. */
   repositionMaxTime: 1.5,
 } as const;

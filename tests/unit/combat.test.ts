@@ -1,20 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { Fighter } from '../../src/combat/Fighter';
-import { CombatSystem, sphereHitsActor } from '../../src/combat/CombatSystem';
-import { Actor } from '../../src/game/Actor';
+import { Fighter } from '../../src/sim/combat/Fighter';
+import { CombatSystem, hitFeedback, sphereHitsActor } from '../../src/sim/combat/CombatSystem';
+import { Actor } from '../../src/sim/Actor';
 import { EventBus, type GameEvents } from '../../src/core/events';
-import type { GameContext } from '../../src/game/context';
-import type { NinjaModel } from '../../src/render/NinjaModel';
-import type { CharacterBody } from '../../src/physics/PhysicsWorld';
+import type { SimContext } from '../../src/sim/context';
+import type { CharacterBody } from '../../src/sim/physics/PhysicsWorld';
 import { COMBAT } from '../../src/config/combat';
 import { ENEMIES } from '../../src/config/enemies';
 
 const DT = 1 / 60;
-const fakeModel = () => ({ flash() {}, setAura() {}, setGuard() {}, setHandOrb() {} }) as unknown as NinjaModel;
 
 function actor(kind: 'player' | 'melee', x: number, z: number, hp = 100): Actor {
-  const a = new Actor(kind, kind === 'player' ? 'player' : 'enemy', kind, new Fighter({ maxHp: hp, maxChakra: 100 }), fakeModel(), {} as CharacterBody, 0.4, 1.8);
+  const a = new Actor(kind, kind === 'player' ? 'player' : 'enemy', kind, new Fighter({ maxHp: hp, maxChakra: 100 }), {} as CharacterBody, 0.4, 1.8);
   a.position.set(x, 0, z);
   return a;
 }
@@ -24,9 +22,10 @@ function setup(actors: Actor[]) {
   const log: { type: keyof GameEvents; e: unknown }[] = [];
   for (const t of ['damage', 'death', 'hitStop', 'cameraShake', 'projectileHit'] as const) events.on(t, (e) => log.push({ type: t, e }));
   const ctx = {
-    scene: new THREE.Scene(), events, actors, player: actors[0],
+    events, actors, players: new Map(),
     physics: { raycast: () => null },
-  } as unknown as GameContext;
+    rewound: (t: Actor) => t.position,
+  } as unknown as SimContext;
   return { combat: new CombatSystem(ctx), log, ctx };
 }
 
@@ -67,7 +66,7 @@ describe('CombatSystem hitboxes', () => {
 });
 
 describe('CombatSystem.dealDamage', () => {
-  it('stuns, knocks back and emits player hit feedback', () => {
+  it('stuns, knocks back and emits the damage event (hit feedback is client-side)', () => {
     const p = actor('player', 0, 0);
     const e = actor('melee', 0, 2);
     const { combat, log } = setup([p, e]);
@@ -75,7 +74,7 @@ describe('CombatSystem.dealDamage', () => {
     expect(e.fighter.stunRemaining).toBeCloseTo(ENEMIES.hitStun);
     expect(e.anim).toBe('hit');
     expect(e.knockback.z).toBeCloseTo(4);
-    expect(log.map((l) => l.type)).toEqual(['damage', 'hitStop', 'cameraShake']);
+    expect(log.map((l) => l.type)).toEqual(['damage']);
   });
 
   it('guard reduces knockback and does not stun', () => {
@@ -113,7 +112,9 @@ describe('CombatSystem launch', () => {
     expect(e.velocity.y).toBe(9);
     expect(e.grounded).toBe(false);
     expect(e.anim).toBe('launched');
-    expect(log.find((l) => l.type === 'hitStop')?.e).toEqual({ duration: COMBAT.hitStopHeavy });
+    const dmg = log.find((l) => l.type === 'damage')!.e as GameEvents['damage'];
+    expect(hitFeedback(dmg, p.id)?.hitStop).toBe(COMBAT.hitStopHeavy);
+    expect(hitFeedback(dmg, 999)).toBeNull(); // someone else's fight: no feedback
     for (let i = 0; i < 120; i++) combat.update(DT); // 2 s airborne
     expect(e.anim).toBe('launched');
     expect(e.fighter.stunned).toBe(true);
@@ -140,13 +141,12 @@ describe('CombatSystem projectiles', () => {
   it('flies straight, hits the first enemy once, then is removed', () => {
     const p = actor('player', 0, 0);
     const e = actor('melee', 0, 10);
-    const { combat, log, ctx } = setup([p, e]);
+    const { combat, log } = setup([p, e]);
     combat.spawnProjectile({ owner: p, kind: 'kunai', origin: new THREE.Vector3(0, 1, 0.5), direction: new THREE.Vector3(0, 0, 1), speed: 30, damage: 8, radius: 0.25, maxRange: 40, knockback: 1, visual: 'kunai' });
-    expect(ctx.scene.children).toHaveLength(1);
+    expect(combat.projectileStates()).toHaveLength(1);
     for (let i = 0; i < 60; i++) combat.update(DT);
     expect(e.fighter.hp).toBe(92);
     expect(combat.counts.projectiles).toBe(0);
-    expect(ctx.scene.children).toHaveLength(0);
     expect(log.some((l) => l.type === 'projectileHit')).toBe(true);
   });
 });

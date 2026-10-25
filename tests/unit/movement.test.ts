@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FootstepTimer, JumpAssist, approachXZ, drainClimbChakra, jumpVelocity, turnToward } from '../../src/player/movementMath';
+import { FootstepTimer, JumpAssist, approachXZ, drainClimbChakra, jumpVelocity, turnToward } from '../../src/sim/player/movementMath';
 import { MOVEMENT } from '../../src/config/movement';
 
 const DT = 1 / 60;

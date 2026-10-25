@@ -1,12 +1,14 @@
 import * as THREE from 'three';
-import { COMBAT } from '../config/combat';
-import { ENEMIES } from '../config/enemies';
-import type { AttackKind } from '../core/types';
+import { COMBAT } from '../../config/combat';
+import { ENEMIES } from '../../config/enemies';
+import type { AttackKind } from '../../core/types';
+import type { GameEvents } from '../../core/events';
 import type { HitResult } from './Fighter';
 import { qteFinish } from './grab';
-import type { Actor } from '../game/Actor';
-import type { GameContext } from '../game/context';
-import { createProjectileMesh, disposeObject } from '../render/meshes';
+import type { Actor } from '../Actor';
+import type { SimContext } from '../context';
+import type { ProjectileState } from '../protocol';
+import { PVP } from '../../config/pvp';
 
 export interface HitboxSpec {
   owner: Actor;
@@ -38,16 +40,27 @@ export interface ProjectileSpec {
 }
 
 interface Hitbox { spec: HitboxSpec; age: number; hit: Set<number> }
-interface Projectile { spec: ProjectileSpec; pos: THREE.Vector3; dir: THREE.Vector3; travelled: number; mesh: THREE.Object3D }
+interface Projectile { id: number; spec: ProjectileSpec; pos: THREE.Vector3; dir: THREE.Vector3; travelled: number }
 
 /** Sphere vs actor capsule: horizontal distance ≤ r + actor.radius and vertical overlap with [feet, feet + height]. */
-export function sphereHitsActor(center: THREE.Vector3, r: number, a: Actor): boolean {
-  const dx = center.x - a.position.x, dz = center.z - a.position.z;
+export function sphereHitsActor(center: THREE.Vector3, r: number, a: Actor, at: THREE.Vector3 = a.position): boolean {
+  const dx = center.x - at.x, dz = center.z - at.z;
   const reach = r + a.radius;
-  return dx * dx + dz * dz <= reach * reach && center.y + r >= a.position.y && center.y - r <= a.position.y + a.height;
+  return dx * dx + dz * dz <= reach * reach && center.y + r >= at.y && center.y - r <= at.y + a.height;
 }
 
-const isHeavy = (kind: AttackKind) => kind === 'combo5' || kind === 'special' || kind === 'chidori' || kind === 'grabFinisher';
+/** Client-side feedback for a damage event: hit-stop and camera shake when it involves `meId`, else null. */
+export function hitFeedback(e: GameEvents['damage'], meId: number): { hitStop: number; shake: { intensity: number; duration: number } } | null {
+  if (e.sourceId !== meId && e.targetId !== meId) return null;
+  const heavy = isHeavy(e.kind) || e.killed;
+  const shake = e.blocked ? COMBAT.shake.blocked
+    : e.kind === 'combo5' ? COMBAT.shake.launcher
+    : heavy ? COMBAT.shake.heavy
+    : e.targetId === meId ? COMBAT.shake.playerHit : COMBAT.shake.light;
+  return { hitStop: heavy ? COMBAT.hitStopHeavy : COMBAT.hitStop, shake };
+}
+
+export const isHeavy = (kind: AttackKind) => kind === 'combo5' || kind === 'special' || kind === 'chidori' || kind === 'grabFinisher';
 
 /** Hitboxes, projectiles, damage resolution and fighter ticking. Owner: combat agent. */
 export class CombatSystem {
@@ -58,7 +71,9 @@ export class CombatSystem {
   /** Last actor that landed a (non-ignored) hit on each target id (substitution destination). */
   readonly lastAttacker = new Map<number, Actor>();
 
-  constructor(private readonly ctx: GameContext) {}
+  private nextProjectileId = 1;
+
+  constructor(private readonly ctx: SimContext) {}
 
   /** Live hitbox; damages each target at most once over its lifetime. */
   spawnHitbox(spec: HitboxSpec): void {
@@ -67,12 +82,12 @@ export class CombatSystem {
 
   spawnProjectile(spec: ProjectileSpec): void {
     const dir = spec.direction.clone().normalize();
-    const pos = spec.origin.clone();
-    const mesh = createProjectileMesh(spec.visual);
-    mesh.position.copy(pos);
-    mesh.lookAt(this.tmp.copy(pos).add(dir));
-    this.ctx.scene.add(mesh);
-    this.projectiles.push({ spec, pos, dir, travelled: 0, mesh });
+    this.projectiles.push({ id: this.nextProjectileId++, spec, pos: spec.origin.clone(), dir, travelled: 0 });
+  }
+
+  /** Live projectiles for snapshots (the client draws them). */
+  projectileStates(): ProjectileState[] {
+    return this.projectiles.map((p) => ({ id: p.id, x: p.pos.x, y: p.pos.y, z: p.pos.z, dx: p.dir.x, dy: p.dir.y, dz: p.dir.z, visual: p.spec.visual }));
   }
 
   /** Number of live hitboxes / projectiles (tests, debug). */
@@ -85,6 +100,8 @@ export class CombatSystem {
     source: Actor, target: Actor, damage: number, knockback: number, kind: AttackKind, hitPoint: THREE.Vector3,
     launch = 0, stun?: number,
   ): HitResult {
+    // PvP: every technique hits players softer so fights last longer.
+    if (source.kind === 'player' && target.kind === 'player') damage *= PVP.damageScale;
     const res = target.fighter.applyHit({ damage });
     if (res.ignored) return res;
     this.lastAttacker.set(target.id, source);
@@ -101,23 +118,12 @@ export class CombatSystem {
       target.setAnim('dead', true);
       ev.emit('death', { id: target.id, team: target.team });
     } else if (!res.blocked) {
-      target.fighter.setStun(stun ?? (target.team === 'player' ? COMBAT.hitStun : ENEMIES.hitStun));
+      target.fighter.setStun(stun ?? (target.kind === 'player' ? COMBAT.hitStun : ENEMIES.hitStun));
       target.setAnim(launch > 0 ? 'launched' : 'hit', true);
     }
     if (launch > 0 && !res.blocked) {
       target.velocity.y = launch;
       target.grounded = false;
-    }
-    if (!res.blocked) target.model.flash(COMBAT.hitFlash);
-
-    if (source.team === 'player' || target.team === 'player') {
-      const heavy = isHeavy(kind) || res.killed;
-      ev.emit('hitStop', { duration: heavy ? COMBAT.hitStopHeavy : COMBAT.hitStop });
-      const s = res.blocked ? COMBAT.shake.blocked
-        : kind === 'combo5' ? COMBAT.shake.launcher
-        : heavy ? COMBAT.shake.heavy
-        : target.team === 'player' ? COMBAT.shake.playerHit : COMBAT.shake.light;
-      ev.emit('cameraShake', { intensity: s.intensity, duration: s.duration });
     }
     return res;
   }
@@ -152,7 +158,7 @@ export class CombatSystem {
       const c = owner.forward(this.tmp).multiplyScalar(h.spec.forwardOffset).add(owner.position);
       c.y += h.spec.heightOffset;
       for (const t of this.targets(owner.team)) {
-        if (h.hit.has(t.id) || !sphereHitsActor(c, h.spec.radius, t)) continue;
+        if (h.hit.has(t.id) || !sphereHitsActor(c, h.spec.radius, t, this.ctx.rewound(t, owner))) continue;
         h.hit.add(t.id);
         this.dealDamage(owner, t, h.spec.damage, h.spec.knockback, h.spec.kind, t.chest(), h.spec.launch, h.spec.stun);
       }
@@ -173,35 +179,31 @@ export class CombatSystem {
       const targets = this.targets(spec.owner.team);
       for (let i = 1; i <= n; i++) {
         const c = this.tmp.copy(p.dir).multiplyScalar((step * i) / n).add(p.pos);
-        const t = targets.find((a) => sphereHitsActor(c, spec.radius, a));
+        const t = targets.find((a) => sphereHitsActor(c, spec.radius, a, this.ctx.rewound(a, spec.owner)));
         if (!t) continue;
         this.dealDamage(spec.owner, t, spec.damage, spec.knockback, spec.kind, c);
         this.ctx.events.emit('projectileHit', { position: { x: c.x, y: c.y, z: c.z }, hitActor: true });
-        disposeObject(p.mesh);
         return false;
       }
       p.pos.addScaledVector(p.dir, step);
       p.travelled += step;
-      p.mesh.position.copy(p.pos);
       if (wall) this.ctx.events.emit('projectileHit', { position: { x: p.pos.x, y: p.pos.y, z: p.pos.z }, hitActor: false });
-      if (wall || p.travelled >= spec.maxRange - 1e-6) {
-        disposeObject(p.mesh);
-        return false;
-      }
+      if (wall || p.travelled >= spec.maxRange - 1e-6) return false;
       return true;
     });
   }
 
   /** Removes every hitbox and projectile (restart) and interrupts a grab sequence (victims released). */
   clear(): void {
-    const q = this.ctx.qte;
-    if (q && !q.done) {
-      qteFinish(q, 'interrupted');
-      this.ctx.events.emit('grabEnd', { id: this.ctx.player.id, targetId: q.targetId, result: 'interrupted', hits: q.index });
+    for (const p of this.ctx.players.values()) {
+      const q = p.qte;
+      if (q && !q.done) {
+        qteFinish(q, 'interrupted');
+        this.ctx.events.emit('grabEnd', { id: p.actor.id, targetId: q.targetId, result: 'interrupted', hits: q.index });
+      }
+      p.qte = null;
     }
-    this.ctx.qte = null;
     for (const a of this.ctx.actors) a.grabbedBy = null;
-    for (const p of this.projectiles) disposeObject(p.mesh);
     this.projectiles = [];
     this.hitboxes = [];
     this.lastAttacker.clear();
