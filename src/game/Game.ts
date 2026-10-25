@@ -14,20 +14,13 @@ import { PlayerController } from '../player/PlayerController';
 import { CameraRig } from '../camera/CameraRig';
 import { EnemyAI } from '../ai/EnemyAI';
 import { WaveManager } from '../ai/WaveManager';
-import { NinjaModel, type NinjaLook } from '../render/NinjaModel';
+import { NinjaModel } from '../render/NinjaModel';
+import { LOOKS, NAMES } from '../render/looks';
 import { Effects } from '../render/Effects';
 import { buildArena, type ArenaInfo } from '../world/Arena';
 import { AudioSystem } from '../audio/AudioSystem';
+import { PostFX } from '../render/PostFX';
 
-const LOOKS: Record<ActorKind, NinjaLook> = {
-  player: { outfit: 0xff7a1a, accent: 0x1d2b4f, hair: 0xffd23a, skin: 0xf2c49b, headband: 0x3a5bd6 },
-  melee: { outfit: 0x2b2b38, accent: 0xb3202a, hair: 0x1a1a1a, skin: 0xd9a77e, headband: 0x777777, mask: true },
-  ranged: { outfit: 0x3c5a3a, accent: 0xd8c27a, hair: 0x4a2c1a, skin: 0xd9a77e, headband: 0x777777, mask: true },
-};
-const NAMES: Record<Exclude<ActorKind, 'player'>, string[]> = {
-  melee: ['Rogue Chūnin', 'Mist Swordsman', 'Sound Brawler'],
-  ranged: ['Rain Kunoichi', 'Sand Marksman', 'Cloud Archer'],
-};
 
 /** Public surface the UI is allowed to use. */
 export interface GameApi {
@@ -80,6 +73,7 @@ export class Game implements GameApi {
   private lastStateChange = 0;
   private fps = 60;
   private projected = new THREE.Vector3();
+  private readonly postfx: PostFX;
 
   static async create(canvasHost: HTMLElement): Promise<Game> {
     return new Game(canvasHost, await PhysicsWorld.create());
@@ -92,6 +86,8 @@ export class Game implements GameApi {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Neutral keeps hues and saturation (ACES would wash out the cel-shaded palette).
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.domElement.id = 'game-canvas';
     this.renderer.domElement.tabIndex = 0;
     host.appendChild(this.renderer.domElement);
@@ -127,6 +123,7 @@ export class Game implements GameApi {
     };
     this.combat = this.ctx.combat = new CombatSystem(this.ctx);
     this.camera.attach(this.ctx);
+    this.postfx = new PostFX(this.renderer, this.scene, this.camera.camera);
     this.ai = new EnemyAI(this.ctx);
     this.waves = new WaveManager(this.ctx, this.ai);
     this.playerCombat = new PlayerCombat(this.ctx, player);
@@ -243,6 +240,8 @@ export class Game implements GameApi {
   applySettings(s: Settings): void {
     Object.assign(this.settings, s);
     this.audio.setVolume(s.masterVolume);
+    this.postfx.enabled = s.graphics === 'high';
+    this.renderer.shadowMap.enabled = s.graphics === 'high';
   }
 
   /** Removes every transient object and restores the player: no state survives a restart. */
@@ -329,13 +328,27 @@ export class Game implements GameApi {
       // Paused / ended: frozen frame, still re-rendered so the UI overlay stays live.
       this.camera.update(0, 1);
     }
-    this.renderer.render(this.scene, this.camera.camera);
+    this.updateSpeedLines(frameDt);
+    this.postfx.render(frameDt);
+  }
+
+  /** Anime speed lines while sprinting or in a forced dash/dodge; eased so they fade in and out. */
+  private updateSpeedLines(frameDt: number): void {
+    const p = this.ctx.player;
+    let target = 0;
+    if (this.state === 'playing' && p.alive) {
+      const speed = Math.hypot(p.velocity.x, p.velocity.z);
+      target = THREE.MathUtils.clamp((speed - MOVEMENT.runSpeed) / (MOVEMENT.sprintSpeed - MOVEMENT.runSpeed), 0, 1);
+      if (p.control.forcedVelocity && p.control.forcedVelocity.lengthSq() > MOVEMENT.sprintSpeed ** 2) target = 1;
+    }
+    if (frameDt > 0) this.postfx.speedLines += (target - this.postfx.speedLines) * (1 - Math.exp(-8 * frameDt));
   }
 
   private resize(): void {
     const w = window.innerWidth, h = window.innerHeight;
     this.renderer.setSize(w, h);
     this.camera.resize(w / h);
+    this.postfx?.setSize(w, h);
   }
 
   getHudData(): HudData {

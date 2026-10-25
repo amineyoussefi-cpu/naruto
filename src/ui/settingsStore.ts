@@ -16,6 +16,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     invertY: typeof r.invertY === 'boolean' ? r.invertY : d.invertY,
     layout: r.layout === 'qwerty' || r.layout === 'azerty' || r.layout === 'auto' ? r.layout : d.layout,
     showFps: typeof r.showFps === 'boolean' ? r.showFps : d.showFps,
+    graphics: r.graphics === 'high' || r.graphics === 'low' ? r.graphics : d.graphics,
   };
 }
 

@@ -11,7 +11,7 @@ const FX = {
   hitColor: 0xffd27a, blockColor: 0x7fd4ff, killColor: 0xff6a3a, chakraColor: 0x4fb8ff,
   dustColor: 0xc8b896, smokeColor: 0xe8e8ee, deathSmoke: 0x6a6470,
   telegraphColor: 0xff3b1f,
-  lightIntensity: 25, lightRange: 9, lightDecay: 8,
+  lightIntensity: 6, lightRange: 7, lightDecay: 8,
 };
 
 type Pool = {

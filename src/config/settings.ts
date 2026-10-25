@@ -5,6 +5,8 @@ export interface Settings {
   invertY: boolean;
   layout: 'auto' | 'qwerty' | 'azerty';
   showFps: boolean;
+  /** 'high' = anime post-processing (ink outlines, bloom, speed lines) + shadows; 'low' = direct render. */
+  graphics: 'high' | 'low';
 }
 export const DEFAULT_SETTINGS: Settings = {
   masterVolume: 0.7,
@@ -12,6 +14,7 @@ export const DEFAULT_SETTINGS: Settings = {
   invertY: false,
   layout: 'auto',
   showFps: false,
+  graphics: 'high',
 };
 export const SETTINGS_STORAGE_KEY = 'shinobi-arena.settings.v1';
 

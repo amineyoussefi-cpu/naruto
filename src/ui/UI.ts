@@ -169,6 +169,7 @@ export class UI {
     f.invert.checked = s.invertY;
     f.layout.value = s.layout;
     f.fps.checked = s.showFps;
+    f.graphics.value = s.graphics;
     this.el['settings-volume-val'].textContent = `${f.volume.value} %`;
     this.el['settings-sensitivity-val'].textContent = `${s.sensitivity.toFixed(1)}×`;
   }
@@ -181,6 +182,7 @@ export class UI {
       invertY: f.invert.checked,
       layout: f.layout.value,
       showFps: f.fps.checked,
+      graphics: f.graphics.value,
     });
     this.game.applySettings(s);
     saveSettings(browserStorage(), s);
@@ -194,6 +196,7 @@ export class UI {
       invert: this.el['settings-invert'] as HTMLInputElement,
       layout: this.el['settings-layout'] as HTMLSelectElement,
       fps: this.el['settings-fps'] as HTMLInputElement,
+      graphics: this.el['settings-graphics'] as HTMLSelectElement,
     };
   }
 
@@ -367,6 +370,13 @@ const TEMPLATE = /* html */ `
       <option value="auto">Automatique</option>
       <option value="qwerty">QWERTY</option>
       <option value="azerty">AZERTY</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="settings-graphics">Qualité graphique</label>
+    <select id="settings-graphics">
+      <option value="high">Élevée (contours, bloom)</option>
+      <option value="low">Basse (performances)</option>
     </select>
   </div>
   <div class="field">
