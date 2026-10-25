@@ -68,11 +68,13 @@ L'aide affiche les libellés adaptés (détection automatique, modifiable dans P
 | Caméra | Souris | Souris |
 | Course ultra-rapide | W W (double appui, maintenir) | Z Z (double appui, maintenir) |
 | Ruée de chakra vers la cible (appui) / course ninja (maintenu) | Maj | Maj |
-| Saut, double saut en l'air, marche sur les murs (près d'un mur) | Espace | Espace |
+| Saut, double saut en l'air (contre un mur : se détacher) | Espace | Espace |
+| Escalade automatique : courir vers un mur escaladable ; s'éloigner du mur pour lâcher | (déplacement) | (déplacement) |
 | Combo 5 coups à tête chercheuse, le 5ᵉ projette l'ennemi | Clic gauche (marteler) | Clic gauche (marteler) |
 | Garde | Clic droit (maintenir) | Clic droit (maintenir) |
-| Kunaï (distance) | Q ou clic molette | A ou clic molette |
-| Rasengan (35 chakra) | E | E |
+| Kunaï (visée assistée autour du réticule) | Q ou clic molette | A ou clic molette |
+| Technique du personnage : maintenir pour charger, relâcher (Rasengan / Chidori) ; appui (Sharingan) | E | E |
+| Saisie, puis cliquer les 6 flèches dans l'ordre | Clic gauche + droit ensemble | Clic gauche + droit ensemble |
 | Concentration (recharge chakra) | R (maintenir) | R (maintenir) |
 | Esquive ; quand vous êtes touché : permutation (jauge de 4) | C | C |
 | Verrouiller / libérer la cible | F | F |
@@ -80,6 +82,23 @@ L'aide affiche les libellés adaptés (détection automatique, modifiable dans P
 | Pause | Échap / P | Échap / P |
 
 Cliquer dans le jeu capture la souris. Perdre le focus ou la capture met le jeu en pause.
+
+## Personnages
+
+Choisis dans le menu (et depuis les écrans de victoire/défaite), mémorisés dans les paramètres :
+
+| Personnage | Technique (E) | Détail |
+|---|---|---|
+| Naruto (modèle Blender « Ren ») | Rasengan chargé | Sans recharge. Relâché tout de suite : 20 % de puissance ; 100 % après 1,5 s de charge. Dégâts, recul, rayon et effets suivent la charge. 45 chakra. |
+| Sasuke | Sharingan | Genjutsu : tous les ennemis dans un rayon de 14 m sont désorientés 5 s (attaques interrompues, ne ciblent plus le joueur). 80 chakra, recharge 8 s. |
+| Kakashi | Chidori chargé | Même charge que le Rasengan, puis ruée qui traverse les ennemis : chacun n'est touché qu'une fois, la ruée s'arrête devant les obstacles. 50 chakra. |
+
+**Saisie** (tous) : clic gauche + droit à moins de 120 ms d'intervalle. Si un ennemi est devant, une courte séquence
+s'ouvre : le curseur est libéré, six flèches s'affichent, cliquez-les dans l'ordre avant la fin du chrono (4 s).
+Chaque bonne flèche frappe (dégâts croissants), les six déclenchent un final puissant ; une erreur ou le temps écoulé
+termine la séquence. Le joueur est invulnérable pendant la séquence ; l'ennemi est toujours relâché à la fin.
+
+Chakra : réserve de 300, régénération passive 12/s (après 2,5 s sans dépense), concentration (R) 90/s.
 
 ## Architecture
 
@@ -117,7 +136,8 @@ Le projet a été construit par une équipe d'agents IA en parallèle ; les cons
 ## Paramètres de gameplay
 
 Vitesses, gravité, hauteur de saut, coûts et régénération de chakra, dégâts, fenêtres d'attaque, recharges,
-ennemis et vagues : tout est dans [`src/config/`](src/config/), documenté dans [docs/CONFIG.md](docs/CONFIG.md).
+charge des techniques, saisie, aide à la visée, caméra dynamique, personnages, ennemis et vagues : tout est dans
+[`src/config/`](src/config/), documenté dans [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Direction artistique
 
@@ -147,5 +167,10 @@ environ 16 FPS : le jeu reste jouable en test mais pas confortable. Une seule lu
 - La mer s'arrête à une limite invisible à ~128 m du centre.
 - Le clignotement d'impact ne colore pas tous les petits détails des personnages (bandages, plaque, visage).
 - Les bruits de pas sont joués pour tous les personnages, sans atténuation avec la distance.
-- Un seul type de technique spéciale (Rasengan) ; pas de musique d'ambiance ; pas de manette.
+- Pas de musique d'ambiance ; pas de manette.
+- Les flèches de la saisie se cliquent uniquement (pas de raccourci clavier) ; si le navigateur refuse de recapturer la
+  souris à la fin de la séquence, un clic dans le jeu la recapture.
+- Le son de charge ne reprend pas après une pause en pleine charge (la charge, elle, reprend normalement).
+- Les yeux du Sharingan ne s'appliquent pas au modèle Blender (Sasuke et Kakashi sont procéduraux).
+- Le Chidori ne s'arrête que sur des obstacles à hauteur de poitrine (rayon unique), pas sur de très petits rochers.
 - Le multijoueur est hors périmètre.

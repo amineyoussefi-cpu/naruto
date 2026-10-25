@@ -22,6 +22,7 @@ const state = (page: Page) => page.evaluate(() => window.__game.state);
 async function startGame(page: Page) {
   await page.goto('/');
   await page.locator('#btn-play').click();
+  await page.locator('#btn-char-confirm').click(); // character selection (Naruto pre-selected)
   await page.locator('#btn-start-fight').click();
   await expect.poll(() => state(page)).toBe('playing');
   await expect(page.locator('#hud')).toBeVisible();
