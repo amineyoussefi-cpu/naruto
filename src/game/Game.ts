@@ -96,7 +96,7 @@ export class Game implements GameApi {
     this.input = new InputManager(this.renderer.domElement);
 
     this.arena = buildArena(this.scene, physics);
-    this.fx = new Effects(this.scene, this.events);
+    this.fx = new Effects(this.scene, this.events, (id) => this.ctx.actors.find((a) => a.id === id));
     this.audio = new AudioSystem(this.events);
 
     const player = this.createActor('player', this.arena.playerSpawn, { hpMul: 1, dmgMul: 1 });
@@ -365,7 +365,7 @@ export class Game implements GameApi {
       cooldowns: [
         cd('special', 'Rasengan', labels.special, COMBAT.special.cooldown, COMBAT.special.chakraCost),
         cd('kunai', 'Kunai', labels.kunai.split(' ')[0], COMBAT.kunai.cooldown, 0),
-        cd('dodge', 'Dodge', labels.dodge, COMBAT.dodge.cooldown, 0),
+        cd('dodge', 'Esquive', labels.dodge, COMBAT.dodge.cooldown, 0),
       ],
       wave: this.waves.wave,
       totalWaves: WAVES.length,
