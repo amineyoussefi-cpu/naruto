@@ -23,6 +23,12 @@ import { AudioSystem } from '../audio/AudioSystem';
 import { PostFX } from '../render/PostFX';
 
 
+/** Keys that answer the grab sequence arrows (physical codes: WASD on QWERTY = ZQSD on AZERTY). */
+const QTE_KEYS: Record<string, QteDir> = {
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+  KeyW: 'up', KeyS: 'down', KeyA: 'left', KeyD: 'right',
+};
+
 /** Public surface the UI is allowed to use. */
 export interface GameApi {
   readonly state: GameState;
@@ -150,6 +156,13 @@ export class Game implements GameApi {
       if (!this.input.pointerLocked && this.state === 'playing' && !this.qteCursor) this.pause();
     });
     window.addEventListener('blur', () => { if (this.state === 'playing') this.pause(); });
+    // Grab sequence: arrow keys (and the physical movement keys ZQSD / WASD) answer the arrows too.
+    window.addEventListener('keydown', (e) => {
+      const dir = QTE_KEYS[e.code];
+      if (!dir || e.repeat || !this.qteCursor) return;
+      e.preventDefault();
+      this.qteInput(dir);
+    });
     this.renderer.domElement.addEventListener('click', () => {
       if (this.state === 'playing' && !this.input.pointerLocked && !this.qteCursor) this.input.requestPointerLock();
     });

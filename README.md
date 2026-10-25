@@ -74,7 +74,7 @@ L'aide affiche les libellés adaptés (détection automatique, modifiable dans P
 | Garde | Clic droit (maintenir) | Clic droit (maintenir) |
 | Kunaï (visée assistée autour du réticule) | Q ou clic molette | A ou clic molette |
 | Technique du personnage : maintenir pour charger, relâcher (Rasengan / Chidori) ; appui (Sharingan) | E | E |
-| Saisie, puis cliquer les 6 flèches dans l'ordre | Clic gauche + droit ensemble | Clic gauche + droit ensemble |
+| Saisie, puis les 6 flèches dans l'ordre (touches fléchées, ZQSD/WASD ou clic) | Clic gauche + droit ensemble | Clic gauche + droit ensemble |
 | Concentration (recharge chakra) | R (maintenir) | R (maintenir) |
 | Esquive ; quand vous êtes touché : permutation (jauge de 4) | C | C |
 | Verrouiller / libérer la cible | F | F |
@@ -94,7 +94,8 @@ Choisis dans le menu (et depuis les écrans de victoire/défaite), mémorisés d
 | Kakashi | Chidori chargé | Même charge que le Rasengan, puis ruée qui traverse les ennemis : chacun n'est touché qu'une fois, la ruée s'arrête devant les obstacles. 50 chakra. |
 
 **Saisie** (tous) : clic gauche + droit à moins de 120 ms d'intervalle. Si un ennemi est devant, une courte séquence
-s'ouvre : le curseur est libéré, six flèches s'affichent, cliquez-les dans l'ordre avant la fin du chrono (4 s).
+s'ouvre : six flèches s'affichent ; entrez-les dans l'ordre avant la fin du chrono (4 s) avec les touches fléchées,
+ZQSD/WASD ou en cliquant dessus (le curseur est libéré).
 Chaque bonne flèche frappe (dégâts croissants), les six déclenchent un final puissant ; une erreur ou le temps écoulé
 termine la séquence. Le joueur est invulnérable pendant la séquence ; l'ennemi est toujours relâché à la fin.
 
@@ -168,8 +169,7 @@ environ 16 FPS : le jeu reste jouable en test mais pas confortable. Une seule lu
 - Le clignotement d'impact ne colore pas tous les petits détails des personnages (bandages, plaque, visage).
 - Les bruits de pas sont joués pour tous les personnages, sans atténuation avec la distance.
 - Pas de musique d'ambiance ; pas de manette.
-- Les flèches de la saisie se cliquent uniquement (pas de raccourci clavier) ; si le navigateur refuse de recapturer la
-  souris à la fin de la séquence, un clic dans le jeu la recapture.
+- Si le navigateur refuse de recapturer la souris à la fin d'une saisie, un clic dans le jeu la recapture.
 - Le son de charge ne reprend pas après une pause en pleine charge (la charge, elle, reprend normalement).
 - Les yeux du Sharingan ne s'appliquent pas au modèle Blender (Sasuke et Kakashi sont procéduraux).
 - Le Chidori ne s'arrête que sur des obstacles à hauteur de poitrine (rayon unique), pas sur de très petits rochers.

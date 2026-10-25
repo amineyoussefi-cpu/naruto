@@ -103,3 +103,32 @@ test('menu → fight → pause freezes simulation → victory → restart → de
 
   expect(errors).toEqual([]);
 });
+
+test('grab sequence: left+right click grabs, keyboard arrows and ZQSD/WASD answer, sequence completes', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await startGame(page);
+  await expect.poll(() => page.evaluate(() => window.__game.debug().ctx.enemies().length), { timeout: 15_000 }).toBeGreaterThan(0);
+  const results: string[] = [];
+  await page.exposeFunction('__grabEnd', (r: string) => results.push(r));
+  await page.evaluate(() => {
+    window.__game.events.on('grabEnd', (e) => (window as unknown as { __grabEnd(r: string): void }).__grabEnd((e as { result: string }).result));
+    // Put one enemy right in front of the player, held still (AI suspended) until the grab takes over.
+    const { ctx } = window.__game.debug() as unknown as { ctx: { player: { position: { clone(): { z: number } } }; enemies(): { body: unknown; position: { copy(v: unknown): void }; prevPosition: { copy(v: unknown): void } }[]; physics: { teleport(b: unknown, v: unknown): void } } };
+    const e = ctx.enemies()[0];
+    const t = ctx.player.position.clone(); t.z += 1.6;
+    ctx.physics.teleport(e.body, t); e.position.copy(t); e.prevPosition.copy(t);
+    (window.__game.debug() as unknown as { camera: { yaw: number } }).camera.yaw = 0;
+  });
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'left' });
+  await page.mouse.up({ button: 'right' });
+  await expect(page.locator('#qte')).toBeVisible();
+  const arrows = await page.evaluate(() => (window.__game as unknown as { getHudData(): { qte: { arrows: string[] } | null } }).getHudData().qte!.arrows);
+  const arrowKeys: Record<string, string> = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' };
+  const wasd: Record<string, string> = { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' };
+  for (const [i, dir] of arrows.entries()) await page.keyboard.press(i % 2 ? wasd[dir] : arrowKeys[dir]);
+  await expect.poll(() => results).toEqual(['complete']);
+  expect(errors).toEqual([]);
+});

@@ -13,7 +13,7 @@ const COMMANDS: [keyof GameApi['keyLabels'] | 'move' | 'climb', string][] = [
   ['sprint', 'Appui : ruée de chakra (dash) vers la cible · maintenu : course ninja'],
   ['jump', 'Sauter, double saut en l’air'], ['climb', 'Courez contre un mur : escalade automatique et rapide'],
   ['attack', 'Combo de 5 coups à tête chercheuse (le dernier projette l’ennemi)'], ['guard', 'Garde'], ['special', ''],
-  ['grab', 'Saisie : clic gauche + droit ensemble, puis cliquez les 6 flèches dans l’ordre'],
+  ['grab', 'Saisie : clic gauche + droit ensemble, puis les 6 flèches dans l’ordre (touches fléchées, ZQSD/WASD ou clic)'],
   ['kunai', 'Lancer un kunaï (visée assistée si la cible est en vue)'], ['concentrate', 'Concentrer le chakra'],
   ['dodge', 'Esquive · quand vous êtes touché : permutation (substitution)'],
   ['lockOn', 'Verrouiller une cible'], ['switchTarget', 'Changer de cible'], ['pause', 'Pause'],
@@ -569,7 +569,7 @@ const TEMPLATE = /* html */ `
   <div id="hud-cooldowns"></div>
   <div id="hud-fps" hidden></div>
   <div id="qte" hidden role="dialog" aria-labelledby="qte-title">
-    <div id="qte-title">Saisie ! Cliquez les flèches dans l’ordre</div>
+    <div id="qte-title">Saisie ! Flèches du clavier (ou ZQSD / WASD) ou clic, dans l’ordre</div>
     <div class="qte-timer"><div id="qte-timer-fill"></div></div>
     <div class="qte-arrows">${Array.from({ length: QTE_SLOTS }, (_, i) => `<button id="qte-arrow-${i}" class="qte-arrow" type="button"><span class="qte-glyph"></span><span class="qte-mark"></span></button>`).join('')}</div>
     <div id="qte-banner" hidden></div>
