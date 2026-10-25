@@ -8,6 +8,7 @@ import { EventBus } from '../../src/core/events';
 import { buildArena } from '../../src/world/Arena';
 import { PhysicsWorld } from '../../src/physics/PhysicsWorld';
 import type { AnimState } from '../../src/core/types';
+import { LOOKS, pickEnemyLook } from '../../src/render/looks';
 import type { Actor } from '../../src/game/Actor';
 
 const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph'];
@@ -41,6 +42,16 @@ describe('NinjaModel poses', () => {
     expect(Array.from(m.currentPose).every(Number.isFinite)).toBe(true);
     m.dispose();
     expect(m.root.parent).toBeNull();
+  });
+
+  it('stays within the mesh budget for every look and variant', () => {
+    const looks = [LOOKS.player, LOOKS.melee, LOOKS.ranged, ...[0, 0.5, 0.99].flatMap((r) => [pickEnemyLook('melee', () => r), pickEnemyLook('ranged', () => r)])];
+    for (const look of looks) {
+      const m = new NinjaModel(look);
+      expect(m.meshCount).toBeLessThanOrEqual(45);
+      m.dispose();
+    }
+    expect(pickEnemyLook('player', () => 0.7)).toBe(LOOKS.player);
   });
 });
 

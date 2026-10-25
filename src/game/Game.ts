@@ -15,7 +15,7 @@ import { CameraRig } from '../camera/CameraRig';
 import { EnemyAI } from '../ai/EnemyAI';
 import { WaveManager } from '../ai/WaveManager';
 import { NinjaModel } from '../render/NinjaModel';
-import { LOOKS, NAMES } from '../render/looks';
+import { LOOKS, NAMES, pickEnemyLook } from '../render/looks';
 import { Effects } from '../render/Effects';
 import { buildArena, type ArenaInfo } from '../world/Arena';
 import { AudioSystem } from '../audio/AudioSystem';
@@ -165,7 +165,7 @@ export class Game implements GameApi {
       ? { maxHp: COMBAT.player.maxHp, maxChakra: COMBAT.player.maxChakra }
       : { maxHp: Math.round(ENEMIES[kind].maxHp * mods.hpMul), maxChakra: 0 };
     const fighter = new Fighter(stats, COMBAT.guardDamageFactor);
-    const model = new NinjaModel(LOOKS[kind]);
+    const model = new NinjaModel(kind === 'player' ? LOOKS.player : pickEnemyLook(kind));
     this.scene.add(model.root);
     const body = this.physics.createCharacter(feet, MOVEMENT.capsuleRadius, MOVEMENT.capsuleHalfHeight);
     const name = kind === 'player' ? 'You' : NAMES[kind][Math.floor(Math.random() * NAMES[kind].length)];
