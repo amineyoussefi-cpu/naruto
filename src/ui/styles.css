@@ -1,0 +1,6 @@
+/* Owner: UI agent. */
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1020; color: #fff; font-family: system-ui, sans-serif; }
+#app, #ui { position: fixed; inset: 0; }
+#ui { pointer-events: none; }
+#ui button { pointer-events: auto; }
+#loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 1.4rem; }

@@ -1,0 +1,273 @@
+Tu es le responsable technique d’un projet de jeu vidéo 3D. Construis un jeu de combat de ninjas jouable localement, inspiré de Naruto Shippuden: Kizuna Drive, Naruto to Boruto: Shinobi Striker et Naruto Shippuden: Ultimate Ninja Storm 3.
+
+Je veux un vrai jeu jouable avec déplacements fluides, combats lisibles et interface complète. Réalise le projet : ne t’arrête pas à un plan ou à une démonstration visuelle.
+
+## 1. Objectif et périmètre
+
+Créer un jeu solo à la troisième personne permettant de :
+- Explorer une arène 3D.
+- Marcher, courir, sprinter, sauter et grimper aux murs.
+- Combattre plusieurs ninjas NPC.
+- Enchaîner des attaques au corps à corps et utiliser des techniques consommant du chakra.
+- Gérer sa santé, son chakra, ses esquives et ses temps de récupération.
+
+Les inspirations servent à guider la mobilité, le rythme des combats, la caméra et les effets visuels. Utilise les assets fournis dans le projet ou crée des assets originaux cohérents avec cet univers.
+
+Commence par une boucle de jeu complète et fiable, puis améliore sa présentation. Le multijoueur ne fait pas partie du périmètre initial.
+
+## 2. Organisation avec plusieurs agents
+
+Utilise autant d’agents IA que ton environnement permet réellement d’exécuter utilement en parallèle. Crée les agents disponibles ; ne te contente pas de décrire une équipe théorique.
+
+Répartis les responsabilités :
+1. Architecture, intégration et coordination.
+2. Déplacements, sauts, collisions et escalade.
+3. Caméra à la troisième personne et verrouillage des cibles.
+4. Combat, dégâts, chakra et techniques.
+5. IA ennemie et gestion des vagues.
+6. Arène, personnages, animations et effets.
+7. HUD, menus, pause et paramètres.
+8. Tests, compatibilité, Docker et documentation.
+
+Adapte cette répartition au nombre de places disponibles. Si les sous-agents ne sont pas disponibles, exécute ces responsabilités successivement.
+
+Avant les travaux parallèles :
+- Définis les interfaces communes et les événements de gameplay.
+- Attribue des fichiers ou modules distincts à chaque agent.
+- Évite les modifications concurrentes des mêmes fichiers.
+- Désigne un responsable de l’intégration.
+- Maintiens un suivi des tâches, dépendances et décisions.
+
+Chaque agent doit produire une implémentation intégrable, expliquer ses changements et signaler ses limites.
+
+## 3. Technologies et exécution locale
+
+Par défaut, utilise :
+- TypeScript.
+- Three.js pour la 3D.
+- Rapier pour la physique et les collisions.
+- Vite pour le développement et la compilation.
+- Vitest pour les tests de logique.
+- Playwright pour les parcours de bout en bout pertinents.
+
+Si un projet existe déjà, inspecte-le et conserve sa stack lorsqu’elle convient.
+
+Le jeu doit fonctionner localement sur macOS, Windows et Linux dans un navigateur moderne, avec les mêmes commandes npm. Aucun service cloud, compte ou clé API ne doit être nécessaire.
+
+Utilise des versions compatibles, fixe les dépendances et versionne le fichier de verrouillage.
+
+Tous les assets nécessaires doivent être servis localement. Évite les dépendances à des CDN pendant le jeu.
+
+## 4. Déplacements et caméra
+
+Implémente :
+- Déplacement relatif à la caméra.
+- Accélération et freinage progressifs.
+- Sprint avec animation distincte.
+- Saut avec contrôle aérien raisonnable et détection fiable du sol.
+- Escalade des murs compatibles, avec consommation de chakra.
+- Sortie d’escalade au sommet et chute lorsque le chakra est épuisé.
+- Collisions avec le sol, les murs et les obstacles.
+- Réapparition sécurisée si le personnage tombe hors de l’arène.
+
+La caméra doit :
+- Suivre le personnage avec fluidité.
+- Permettre une rotation à la souris.
+- Éviter de traverser les murs.
+- Proposer un verrouillage sur un ennemi.
+- Permettre de changer de cible et de libérer le verrouillage.
+- Gérer correctement la disparition ou la mort de la cible.
+
+Rends les vitesses, la gravité, la hauteur de saut et les coûts de chakra configurables.
+
+## 5. Combat
+
+Implémente un système comprenant :
+- Combo de trois attaques au corps à corps.
+- Attaque à distance avec kunai ou shuriken.
+- Une technique spéciale consommant du chakra.
+- Garde réduisant les dégâts.
+- Esquive avec une courte fenêtre d’invulnérabilité.
+- Réactions aux impacts et recul contrôlé.
+- Temps de récupération empêchant le spam.
+- Mort des ennemis et mort du joueur.
+
+Utilise des zones de frappe actives pendant les fenêtres d’attaque. Un même coup ne doit pas infliger plusieurs fois ses dégâts à la même cible par accident.
+
+Donne du poids aux attaques grâce aux animations, sons, particules, flashs d’impact et mouvements de caméra mesurés.
+
+Les animations peuvent être procédurales si nécessaire, mais elles doivent distinguer clairement repos, course, sprint, saut, escalade, attaque, impact et mort.
+
+## 6. Santé et chakra
+
+Prévois :
+- Barre de santé du joueur.
+- Barre de chakra.
+- Barres de santé des ennemis proches ou ciblés.
+- Indicateurs des techniques et de leurs temps de récupération.
+- Retour visuel lorsqu’une action manque de chakra.
+
+Le chakra doit :
+- Être consommé par les techniques et l’escalade.
+- Se régénérer lentement après un délai configurable.
+- Pouvoir être rechargé activement avec une touche maintenue.
+- Se recharger plus vite pendant cette concentration, qui immobilise le joueur.
+- Interrompre la concentration lorsque le joueur subit un coup.
+
+Centralise les valeurs de santé, dégâts, coûts, délais et régénération dans une configuration documentée.
+
+## 7. Ennemis et boucle de jeu
+
+Crée au moins deux comportements ennemis :
+- Ninja de mêlée : approche, attaque, esquive ou recule.
+- Ninja à distance : conserve sa distance et lance des projectiles.
+
+Utilise des états explicites : attente, détection, poursuite, attaque, récupération, réaction aux dégâts et mort.
+
+Les ennemis doivent :
+- Respecter les obstacles.
+- Annoncer visuellement leurs attaques.
+- Respecter leurs portées et temps de récupération.
+- Éviter de tous attaquer simultanément sans possibilité de réaction.
+- Rester suffisamment actifs pour rendre les combats intéressants.
+
+La boucle complète doit inclure :
+- Menu principal.
+- Courte présentation des commandes.
+- Début de partie.
+- Vagues de ninjas avec difficulté progressive.
+- Indication du nombre d’ennemis restants.
+- Victoire ou défaite.
+- Recommencer une partie sans recharger la page.
+
+## 8. Interface, pause et commandes
+
+Prévois :
+- HUD lisible.
+- Menu pause avec reprendre, recommencer, paramètres et retour au menu.
+- Réglage du volume et de la sensibilité de la caméra.
+- Commandes compatibles AZERTY et QWERTY, avec aide adaptée.
+- Sauvegarde locale des paramètres.
+
+Commandes initiales proposées :
+- WASD / ZQSD : déplacement.
+- Souris : caméra.
+- Maj : sprint.
+- Espace : saut ; près d’un mur, action d’escalade.
+- Clic gauche : attaque au corps à corps.
+- Clic droit : garde.
+- E : technique spéciale.
+- R maintenu : concentration et recharge du chakra.
+- C : esquive.
+- F : verrouillage de cible.
+- Échap : pause.
+
+Attribue également une commande à l’attaque à distance et affiche toutes les commandes dans l’aide.
+
+Pendant la pause, bloque complètement la simulation : physique, IA, attaques, projectiles, régénération et temps de récupération. L’interface doit rester utilisable.
+
+Gère la perte de focus et le verrouillage de la souris. Une reprise ne doit provoquer ni saut temporel ni touche bloquée.
+
+## 9. Direction visuelle et performances
+
+Crée une arène cohérente avec :
+- Sol, murs escaladables, plateformes et obstacles.
+- Personnages de ninjas reconnaissables et silhouettes lisibles.
+- Style stylisé avec couleurs franches et ombrage simple.
+- Effets de chakra et projectiles visibles.
+- Éclairage et ombres adaptés aux performances.
+
+Privilégie la lisibilité et la fluidité. Vise 60 FPS sur une machine courante et documente l’environnement de mesure ainsi que les limites constatées.
+
+Sépare la simulation du rendu et évite que les déplacements ou dégâts dépendent du nombre d’images par seconde. Libère les ressources lors d’un redémarrage de partie.
+
+## 10. Git et fichiers à versionner
+
+Inspecte d’abord le dépôt, son état, son historique et les consignes locales. Préserve les modifications existantes de l’utilisateur.
+
+Versionne :
+- Code source.
+- Prompts utilisés et consignes des agents dans prompts/.
+- Documentation.
+- Configuration d’exemple, notamment .env.example si nécessaire.
+- Tests.
+- Assets nécessaires et informations de provenance.
+- Dockerfile, compose.yaml, .gitignore et .dockerignore.
+- Fichier de verrouillage des dépendances.
+
+Ignore :
+- Poids de modèles.
+- Caches.
+- Environnements virtuels.
+- node_modules.
+- Sorties de compilation et rapports générés.
+- Fichiers temporaires et journaux.
+- Secrets, jetons, clés et fichiers .env locaux.
+
+Crée des commits cohérents après validation de chaque ensemble fonctionnel. Les messages doivent décrire précisément les changements.
+
+Avant toute publication autorisée :
+- Vérifie la branche, les remotes et l’état de travail.
+- Actualise les références distantes.
+- Examine l’historique et les écarts entre les branches locale et distante.
+- Traite les divergences sans écraser le travail existant.
+- Relance les validations nécessaires.
+
+N’effectue aucun force push. Ne prétends jamais avoir publié si aucun push n’a été réalisé et vérifié.
+
+## 11. Docker et documentation
+
+Fournis :
+- Un Dockerfile multiétape produisant une image servant le jeu compilé.
+- Un compose.yaml permettant de lancer le jeu avec :
+  docker compose up --build
+- Un port local documenté, par exemple :
+  http://localhost:8080
+- Une configuration indépendante de chemins propres à une machine.
+
+Le README doit expliquer :
+- Prérequis et versions.
+- Installation.
+- Démarrage local.
+- Compilation et aperçu de production.
+- Tests.
+- Démarrage et arrêt avec Docker.
+- Commandes du jeu.
+- Architecture générale.
+- Paramètres de gameplay.
+- Limites connues.
+
+Expose des commandes cohérentes :
+npm ci
+npm run dev
+npm run build
+npm run preview
+npm run lint
+npm run typecheck
+npm test
+npm run test:e2e
+
+## 12. Validation et livraison
+
+Teste en priorité :
+- Consommation et recharge du chakra.
+- Dégâts, garde, invulnérabilité et mort.
+- Unicité des dégâts par coup.
+- Temps de récupération.
+- Gel de la simulation pendant la pause.
+- Redémarrage d’une partie sans états résiduels.
+- Démarrage, combat et fin de partie.
+- Compilation et lancement Docker.
+
+Effectue aussi une vérification visuelle du jeu dans un navigateur : déplacements, caméra, escalade, combat, HUD et menus.
+
+Ne déclare une vérification réussie que si elle a réellement été exécutée. Si un système d’exploitation n’est pas accessible, distingue compatibilité prévue et compatibilité vérifiée.
+
+Travaille jusqu’à obtenir une boucle complète jouable. Choisis des valeurs raisonnables sans interrompre le travail pour chaque décision secondaire.
+
+À la fin, fournis :
+- Les fonctionnalités réellement implémentées.
+- Les commandes exactes pour jouer localement et avec Docker.
+- Les validations exécutées et leurs résultats.
+- Les limites restantes.
+- L’état Git et les commits créés.
