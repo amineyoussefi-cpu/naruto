@@ -14,3 +14,18 @@ export const DEFAULT_SETTINGS: Settings = {
   showFps: false,
 };
 export const SETTINGS_STORAGE_KEY = 'shinobi-arena.settings.v1';
+
+/** Valid ranges for numeric settings (loaded values are clamped to these). */
+export const SETTINGS_LIMITS = {
+  masterVolume: { min: 0, max: 1 }, // linear gain
+  sensitivity: { min: 0.2, max: 3, step: 0.1 }, // camera mouse multiplier
+};
+
+/** Render-only HUD timings (seconds unless noted). */
+export const UI_CONFIG = {
+  trailDelay: 0.45, // damage trail waits this long before catching up
+  trailSpeed: 0.6, // fraction of max bar per second the damage trail shrinks
+  vignetteTime: 0.45, // red damage vignette fade duration
+  chakraFailTime: 1.1, // "Chakra insuffisant" message duration
+  bannerTime: 2.4, // wave banner duration
+};
