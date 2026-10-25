@@ -36,4 +36,5 @@ export const UI_CONFIG = {
   vignetteTime: 0.45, // red damage vignette fade duration
   chakraFailTime: 1.1, // "Chakra insuffisant" message duration
   bannerTime: 2.4, // wave banner duration
+  chargeMaxLevel: 0.999, // charge level (0..1) from which the meter shows "MAX"
 };

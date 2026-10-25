@@ -1,17 +1,24 @@
 import type { GameApi } from '../game/Game';
-import type { GameState, HudData } from '../core/types';
+import type { CharacterId, GameState, HudData, QteDir } from '../core/types';
 import { SETTINGS_LIMITS, UI_CONFIG, type Settings } from '../config/settings';
+import { CHARACTERS, CHARACTER_IDS } from '../config/characters';
 import { browserStorage, loadSettings, sanitizeSettings, saveSettings } from './settingsStore';
+import { QTE_DIR_LABELS, QTE_GLYPHS, qteArrowState, qteBanner } from './qteView';
 
-type Overlay = 'controls' | 'settings' | null;
+type Overlay = 'character' | 'controls' | 'settings' | null;
 
-const COMMANDS: [keyof GameApi['keyLabels'] | 'move', string][] = [
-  ['move', 'Se déplacer'], ['boost', 'Double appui avant et maintenir : course ultra-rapide'], ['sprint', 'Appui : ruée de chakra vers la cible · maintenu : course ninja'],
-  ['jump', 'Sauter, double saut en l’air (contre un mur : marcher dessus)'],
-  ['attack', 'Combo de 5 coups à tête chercheuse (le dernier projette l’ennemi)'], ['guard', 'Garde'], ['special', 'Rasengan (chakra)'],
-  ['kunai', 'Lancer un kunaï'], ['concentrate', 'Concentrer le chakra'], ['dodge', 'Esquive · quand vous êtes touché : permutation'],
+/** Help rows; 'special' text comes from the selected character. */
+const COMMANDS: [keyof GameApi['keyLabels'] | 'move' | 'climb', string][] = [
+  ['move', 'Se déplacer'], ['boost', 'Double appui avant et maintenir : course ultra-rapide'],
+  ['sprint', 'Appui : ruée de chakra (dash) vers la cible · maintenu : course ninja'],
+  ['jump', 'Sauter, double saut en l’air'], ['climb', 'Courez contre un mur : escalade automatique et rapide'],
+  ['attack', 'Combo de 5 coups à tête chercheuse (le dernier projette l’ennemi)'], ['guard', 'Garde'], ['special', ''],
+  ['grab', 'Saisie : clic gauche + droit ensemble, puis cliquez les 6 flèches dans l’ordre'],
+  ['kunai', 'Lancer un kunaï (visée assistée si la cible est en vue)'], ['concentrate', 'Concentrer le chakra'],
+  ['dodge', 'Esquive · quand vous êtes touché : permutation (substitution)'],
   ['lockOn', 'Verrouiller une cible'], ['switchTarget', 'Changer de cible'], ['pause', 'Pause'],
 ];
+const QTE_SLOTS = 6; // arrow buttons in the template (#qte-arrow-0..5)
 
 const pct = (v: number, max: number) => (max > 0 ? Math.max(0, Math.min(1, v / max)) : 0);
 
@@ -35,6 +42,10 @@ export class UI {
   private readonly written = new Map<string, string>();
   private readonly enemyPool: { root: HTMLElement; fill: HTMLElement }[] = [];
   private cdSlots: { root: HTMLElement; sweep: HTMLElement; time: HTMLElement }[] = [];
+  /** Character highlighted on the selection screen (applied on confirm). */
+  private pendingChar: CharacterId = 'naruto';
+  /** Index of the last wrong arrow click in the current grab sequence (-1 if none). */
+  private qteWrong = -1;
 
   constructor(private readonly root: HTMLElement, private readonly game: GameApi) {
     root.innerHTML = TEMPLATE;
@@ -45,7 +56,30 @@ export class UI {
     this.fillSettingsForm(settings);
 
     const click = (id: string, fn: () => void) => this.el[id].addEventListener('click', () => { this.game.uiClick(); fn(); });
-    click('btn-play', () => this.openOverlay('controls', true));
+    click('btn-play', () => this.openOverlay('character', true));
+    click('btn-char-victory', () => this.openOverlay('character', false));
+    click('btn-char-defeat', () => this.openOverlay('character', false));
+    click('btn-char-confirm', () => this.confirmCharacter());
+    click('btn-char-back', () => this.openOverlay(null));
+    for (const id of CHARACTER_IDS) click(`char-${id}`, () => this.pickCharacter(id));
+    this.el['char-panel'].addEventListener('keydown', (e) => {
+      const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const n = CHARACTER_IDS.length;
+      this.pickCharacter(CHARACTER_IDS[(CHARACTER_IDS.indexOf(this.pendingChar) + step + n) % n]);
+      this.el[`char-${this.pendingChar}`].focus();
+    });
+    // Grab sequence: every arrow sends its own direction, combat validates. Keep clicks off the canvas.
+    const qte = this.el['qte'];
+    for (const type of ['mousedown', 'mouseup', 'pointerdown', 'click'] as const) qte.addEventListener(type, (e) => e.stopPropagation());
+    qte.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); });
+    for (let i = 0; i < QTE_SLOTS; i++) {
+      this.el[`qte-arrow-${i}`].addEventListener('click', (e) => {
+        const dir = (e.currentTarget as HTMLElement).dataset.dir as QteDir | undefined;
+        if (dir) this.game.qteInput(dir);
+      });
+    }
     click('btn-controls', () => this.openOverlay('controls', true));
     click('btn-settings-main', () => this.openOverlay('settings', true));
     click('btn-start-fight', () => { this.resetRun(); this.game.start(); });
@@ -65,7 +99,8 @@ export class UI {
 
     window.addEventListener('keydown', (e) => {
       // The game only handles Escape while playing/paused; close menu overlays ourselves.
-      if (e.code === 'Escape' && this.overlay && this.game.state === 'menu') this.openOverlay(null);
+      const st = this.game.state;
+      if (e.code === 'Escape' && this.overlay && (st === 'menu' || st === 'victory' || st === 'defeat')) this.openOverlay(null);
     });
 
     const ev = this.game.events;
@@ -78,6 +113,12 @@ export class UI {
       this.el['hud-banner'].textContent = e.wave === e.totalWaves ? `Vague finale ${e.wave}/${e.totalWaves}` : `Vague ${e.wave}/${e.totalWaves}`;
       this.banner = UI_CONFIG.bannerTime;
       this.restartAnim(this.el['hud-banner']);
+    });
+    ev.on('grabStart', () => { this.qteWrong = -1; });
+    ev.on('qteInput', (e) => {
+      if (e.correct || e.index >= QTE_SLOTS) return;
+      this.qteWrong = e.index;
+      this.restartAnim(this.el[`qte-arrow-${e.index}`]);
     });
     ev.on('chakraFail', () => {
       this.chakraFail = UI_CONFIG.chakraFailTime;
@@ -97,6 +138,8 @@ export class UI {
     this.updateWave(d);
     this.updateLock(d);
     this.updateEnemyBars(d);
+    this.updateCharge(d);
+    this.updateQte(d);
 
     this.vignette = Math.max(0, this.vignette - frameDt);
     this.style('hud-vignette', 'opacity', (this.vignette / UI_CONFIG.vignetteTime).toFixed(2));
@@ -115,17 +158,23 @@ export class UI {
     this.setHidden('main-menu', st !== 'menu' || ov !== null);
     this.setHidden('hud', st !== 'playing');
     this.setHidden('pause-menu', st !== 'paused' || ov !== null);
-    this.setHidden('victory-screen', st !== 'victory');
-    this.setHidden('defeat-screen', st !== 'defeat');
+    this.setHidden('victory-screen', st !== 'victory' || ov !== null);
+    this.setHidden('defeat-screen', st !== 'defeat' || ov !== null);
+    this.setHidden('char-panel', ov !== 'character');
     this.setHidden('controls-panel', ov !== 'controls');
     this.setHidden('settings-panel', ov !== 'settings');
     this.setHidden('btn-start-fight', !this.overlayFromMenu);
     this.root.classList.toggle('dim', st !== 'playing');
+    const c = CHARACTERS[this.game.character];
+    this.el['menu-character'].textContent = `Personnage : ${c.name} — ${c.specialLabel}`;
+    this.el['menu-character'].className = `menu-character accent-${this.game.character}`;
+    this.el['btn-char-confirm'].textContent = this.overlayFromMenu ? 'Continuer' : 'Valider';
 
     const n = this.wavesCleared;
     if (st === 'victory') this.el['victory-stats'].textContent = `Les ${n || 'cinq'} vagues ont été repoussées. Le village est sauf.`;
     if (st === 'defeat') this.el['defeat-stats'].textContent = n > 0 ? `Vagues franchies : ${n}` : 'Aucune vague franchie.';
 
+    if (ov === 'character') { this.el[`char-${this.pendingChar}`].focus(); return; }
     const visible = ['controls-panel', 'settings-panel', 'main-menu', 'pause-menu', 'victory-screen', 'defeat-screen']
       .map((id) => this.el[id]).find((e) => !e.hidden);
     visible?.querySelector<HTMLElement>('button:not([hidden]), input, select')?.focus();
@@ -135,7 +184,21 @@ export class UI {
     this.overlay = ov;
     this.overlayFromMenu = fromMenu;
     if (ov === 'controls') this.fillControls();
+    if (ov === 'character') this.pickCharacter(this.game.character);
     this.render();
+  }
+
+  private pickCharacter(id: CharacterId): void {
+    this.pendingChar = id;
+    for (const c of CHARACTER_IDS) this.el[`char-${c}`].setAttribute('aria-pressed', String(c === id));
+  }
+
+  /** Applies + persists the highlighted character; from the menu, continues to the controls card. */
+  private confirmCharacter(): void {
+    const s = sanitizeSettings({ ...this.game.settings, character: this.pendingChar });
+    this.game.applySettings(s); // calls game.selectCharacter
+    saveSettings(browserStorage(), s);
+    this.openOverlay(this.overlayFromMenu ? 'controls' : null);
   }
 
   private fillControls(): void {
@@ -145,9 +208,12 @@ export class UI {
     for (const [action, label] of COMMANDS) {
       const row = document.createElement('li');
       const key = document.createElement('kbd');
-      key.textContent = action === 'move' ? `${k.forward} ${k.left} ${k.back} ${k.right}` : k[action];
+      const c = CHARACTERS[this.game.character];
+      const charged = c.special !== 'sharingan';
+      key.textContent = action === 'move' ? `${k.forward} ${k.left} ${k.back} ${k.right}`
+        : action === 'climb' ? `${k.forward} → mur` : action === 'special' && charged ? `${k.special} (maintenir)` : k[action];
       const desc = document.createElement('span');
-      desc.textContent = label;
+      desc.textContent = action === 'special' ? `${c.specialLabel} — ${c.blurb}` : label;
       row.append(key, desc);
       list.appendChild(row);
     }
@@ -184,6 +250,7 @@ export class UI {
       layout: f.layout.value,
       showFps: f.fps.checked,
       graphics: f.graphics.value,
+      character: this.game.settings.character,
     });
     this.game.applySettings(s);
     saveSettings(browserStorage(), s);
@@ -302,6 +369,48 @@ export class UI {
     });
   }
 
+  private updateCharge(d: HudData): void {
+    const c = d.charge;
+    this.setHidden('hud-charge', !c);
+    if (!c) return;
+    const lv = Math.max(0, Math.min(1, c.level)).toFixed(3);
+    const k = `charge|${c.technique}|${lv}`;
+    if (this.written.get('charge') === k) return;
+    this.written.set('charge', k);
+    const box = this.el['hud-charge'];
+    box.style.setProperty('--lv', lv);
+    box.className = `tech-${c.technique}${c.level >= UI_CONFIG.chargeMaxLevel ? ' max' : ''}`;
+    this.text('hud-charge-val', c.level >= UI_CONFIG.chargeMaxLevel ? 'MAX' : `${Math.round(c.level * 100)} %`);
+  }
+
+  private updateQte(d: HudData): void {
+    const q = d.qte;
+    this.setHidden('qte', !q);
+    if (!q) { this.qteWrong = -1; return; }
+    for (let i = 0; i < QTE_SLOTS; i++) {
+      const b = this.el[`qte-arrow-${i}`] as HTMLButtonElement;
+      const dir = q.arrows[i];
+      b.hidden = !dir;
+      if (!dir) continue;
+      const st = qteArrowState(q, i, this.qteWrong);
+      const sig = `${dir}|${st}|${q.done}`;
+      if (this.written.get(b.id) === sig) continue;
+      this.written.set(b.id, sig);
+      b.dataset.dir = dir;
+      b.className = `qte-arrow ${st}${b.classList.contains('anim') ? ' anim' : ''}`;
+      b.querySelector('.qte-glyph')!.textContent = QTE_GLYPHS[dir];
+      b.querySelector('.qte-mark')!.textContent = st === 'done' ? '✓' : st === 'wrong' ? '✗' : '';
+      b.setAttribute('aria-label', `Flèche ${i + 1} : ${QTE_DIR_LABELS[dir]}`);
+      b.disabled = q.done;
+    }
+    this.style('qte-timer-fill', 'transform', `scaleX(${pct(q.timeLeft, q.timeTotal).toFixed(3)})`);
+    const banner = qteBanner(q);
+    this.text('qte-banner', banner);
+    this.setHidden('qte-banner', !banner);
+    this.el['qte'].classList.toggle('done', q.done);
+    this.el['qte-banner'].classList.toggle('good', q.result === 'complete');
+  }
+
   // ---------- DOM helpers (write only on change) ----------
 
   private text(id: string, v: string): void {
@@ -333,10 +442,27 @@ const TEMPLATE = /* html */ `
 <section id="main-menu" class="screen panel" aria-labelledby="title">
   <h1 id="title" class="brush">Shinobi Arena</h1>
   <p class="tagline">L’arène des ninjas</p>
+  <p id="menu-character" class="menu-character"></p>
   <div class="buttons">
     <button id="btn-play" class="primary">Jouer</button>
     <button id="btn-controls">Commandes</button>
     <button id="btn-settings-main">Paramètres</button>
+  </div>
+</section>
+
+<section id="char-panel" class="screen panel scroll" hidden aria-labelledby="char-title">
+  <h2 id="char-title" class="brush">Choisissez votre ninja</h2>
+  <div class="char-cards" role="group" aria-label="Personnages">
+    ${CHARACTER_IDS.map((id) => `<button id="char-${id}" class="char-card accent-${id}" aria-pressed="false">
+      <span class="char-name">${CHARACTERS[id].name}</span>
+      <span class="char-special">${CHARACTERS[id].specialLabel}</span>
+      <span class="char-blurb">${CHARACTERS[id].blurb}</span>
+    </button>`).join('')}
+  </div>
+  <p class="muted">Flèches ou souris pour choisir, Entrée pour sélectionner.</p>
+  <div class="buttons row">
+    <button id="btn-char-confirm" class="primary">Continuer</button>
+    <button id="btn-char-back">Retour</button>
   </div>
 </section>
 
@@ -406,6 +532,7 @@ const TEMPLATE = /* html */ `
   <p id="victory-stats"></p>
   <div class="buttons">
     <button id="btn-retry" class="primary">Recommencer</button>
+    <button id="btn-char-victory">Changer de personnage</button>
     <button id="btn-victory-menu">Menu principal</button>
   </div>
 </section>
@@ -415,6 +542,7 @@ const TEMPLATE = /* html */ `
   <p id="defeat-stats"></p>
   <div class="buttons">
     <button id="btn-retry-defeat" class="primary">Recommencer</button>
+    <button id="btn-char-defeat">Changer de personnage</button>
     <button id="btn-defeat-menu">Menu principal</button>
   </div>
 </section>
@@ -423,6 +551,7 @@ const TEMPLATE = /* html */ `
   <div id="hud-vignette"></div>
   <div id="hud-enemy-bars"></div>
   <div id="hud-crosshair"></div>
+  <div id="hud-charge" hidden><div class="charge-ring"></div><span id="hud-charge-val"></span></div>
   <div id="hud-lock" hidden><span id="hud-lock-name"></span><div class="bar"><div id="hud-lock-fill" class="fill"></div></div></div>
   <div id="hud-banner" hidden></div>
   <div id="hud-wavebox">
@@ -439,5 +568,11 @@ const TEMPLATE = /* html */ `
   </div>
   <div id="hud-cooldowns"></div>
   <div id="hud-fps" hidden></div>
+  <div id="qte" hidden role="dialog" aria-labelledby="qte-title">
+    <div id="qte-title">Saisie ! Cliquez les flèches dans l’ordre</div>
+    <div class="qte-timer"><div id="qte-timer-fill"></div></div>
+    <div class="qte-arrows">${Array.from({ length: QTE_SLOTS }, (_, i) => `<button id="qte-arrow-${i}" class="qte-arrow" type="button"><span class="qte-glyph"></span><span class="qte-mark"></span></button>`).join('')}</div>
+    <div id="qte-banner" hidden></div>
+  </div>
 </div>
 `;

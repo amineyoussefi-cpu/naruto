@@ -29,6 +29,14 @@ describe('settingsStore', () => {
     expect(sanitizeSettings([1, 2])).toEqual(DEFAULT_SETTINGS);
   });
 
+  it('validates the character (bad or missing values fall back to naruto)', () => {
+    expect(sanitizeSettings({}).character).toBe('naruto');
+    expect(sanitizeSettings({ character: 'itachi' }).character).toBe('naruto');
+    expect(sanitizeSettings({ character: 3 }).character).toBe('naruto');
+    expect(sanitizeSettings({ character: 'sasuke' }).character).toBe('sasuke');
+    expect(loadSettings(mem({ [SETTINGS_STORAGE_KEY]: '{"character":"kakashi"}' })).character).toBe('kakashi');
+  });
+
   it('round-trips valid settings', () => {
     const store = mem();
     const s = { masterVolume: 0.3, sensitivity: 2.5, invertY: true, layout: 'azerty' as const, showFps: true, graphics: 'low' as const, character: 'kakashi' as const };
