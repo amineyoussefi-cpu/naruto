@@ -4,7 +4,8 @@ Jeu de combat de ninjas en 3D, solo, à la troisième personne, jouable dans le 
 Inspiré par la mobilité et le rythme de *Kizuna Drive*, *Shinobi Striker* et *Ultimate Ninja Storm 3*,
 avec des personnages, une arène et des sons 100 % originaux et procéduraux (voir [ASSETS.md](ASSETS.md)).
 
-Survivez à 5 vagues de ninjas (mêlée et distance) dans une arène d'entraînement, avec un rythme inspiré de *Storm 3* :
+Survivez à 5 vagues de ninjas (mêlée et distance) dans une grande vallée côtière (~210 m : prairies, rivières
+turquoise et îlots où l'on marche sur l'eau grâce au chakra, rochers, falaise marine, mer à l'horizon), avec un rythme inspiré de *Storm 3* :
 ruée de chakra vers l'ennemi, combos de 5 coups qui foncent sur la cible et projettent l'adversaire, permutation pour
 fuir un enchaînement, double saut, marche sur les murs au chakra, kunaï et Rasengan.
 
@@ -65,6 +66,7 @@ L'aide affiche les libellés adaptés (détection automatique, modifiable dans P
 |---|---|---|
 | Déplacement | W A S D | Z Q S D |
 | Caméra | Souris | Souris |
+| Course ultra-rapide | W W (double appui, maintenir) | Z Z (double appui, maintenir) |
 | Ruée de chakra vers la cible (appui) / course ninja (maintenu) | Maj | Maj |
 | Saut, double saut en l'air, marche sur les murs (près d'un mur) | Espace | Espace |
 | Combo 5 coups à tête chercheuse, le 5ᵉ projette l'ennemi | Clic gauche (marteler) | Clic gauche (marteler) |
@@ -141,8 +143,8 @@ environ 16 FPS : le jeu reste jouable en test mais pas confortable. Une seule lu
 - La sensation (accélérations, caméra, timing des combos) a été vérifiée par scripts et captures, pas par une longue
   session de jeu humaine ; les valeurs de `src/config/` sont un premier réglage.
 - Les ennemis à distance ne vérifient pas la ligne de vue avant de lancer.
-- Le village au-delà des falaises est décoratif (sans collisions) : escalader le mur d'enceinte fait tomber, puis
-  réapparaître le joueur.
+- La carte n'a plus de zone de chute (tout le bas est de l'eau praticable) ; la réapparition sous y = −20 reste active par sécurité.
+- La mer s'arrête à une limite invisible à ~128 m du centre.
 - Le clignotement d'impact ne colore pas tous les petits détails des personnages (bandages, plaque, visage).
 - Les bruits de pas sont joués pour tous les personnages, sans atténuation avec la distance.
 - Un seul type de technique spéciale (Rasengan) ; pas de musique d'ambiance ; pas de manette.

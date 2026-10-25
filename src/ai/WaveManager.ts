@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WAVES, WAVE_INTERMISSION, WAVE_SPAWN_JITTER, WAVE_SPAWN_STAGGER, WAVE_START_DELAY } from '../config/waves';
+import { WAVES, WAVE_INTERMISSION, WAVE_SPAWN_JITTER, WAVE_SPAWN_MAX_DIST, WAVE_SPAWN_MIN_DIST, WAVE_SPAWN_STAGGER, WAVE_START_DELAY } from '../config/waves';
 import type { GameContext } from '../game/context';
 import type { EnemyAI } from './EnemyAI';
 
@@ -90,10 +90,8 @@ export class WaveManager {
 
   private spawn(kind: 'melee' | 'ranged'): void {
     const p = this.ctx.player.position;
-    // Farthest half of the spawn points from the player, cycled.
-    const pts = [...this.ctx.spawns.enemies].sort((a, b) => b.distanceToSquared(p) - a.distanceToSquared(p));
-    const far = pts.slice(0, Math.max(1, Math.ceil(pts.length / 2)));
-    const base = far[this.spawnIndex++ % far.length];
+    const pts = pickSpawnPoints(this.ctx.spawns.enemies, p, WAVE_SPAWN_MIN_DIST, WAVE_SPAWN_MAX_DIST);
+    const base = pts[this.spawnIndex++ % pts.length];
     const ang = this.rng() * Math.PI * 2;
     const r = this.rng() * WAVE_SPAWN_JITTER;
     const feet = new THREE.Vector3(base.x + Math.cos(ang) * r, base.y, base.z + Math.sin(ang) * r);
@@ -101,4 +99,15 @@ export class WaveManager {
     const actor = this.ctx.spawnEnemy(kind, feet, { hpMul: w.hpMul, dmgMul: w.dmgMul });
     this.ai.register(actor);
   }
+}
+
+/**
+ * Spawn points in a ring around the player (big map: enemies arrive from nearby, not the far side).
+ * Falls back to the nearest points beyond `min`, then to every point. Never empty for a non-empty input.
+ */
+export function pickSpawnPoints(points: readonly THREE.Vector3[], player: THREE.Vector3, min: number, max: number): THREE.Vector3[] {
+  const ring = points.filter((q) => { const d = q.distanceTo(player); return d >= min && d <= max; });
+  if (ring.length > 0) return ring;
+  const beyond = points.filter((q) => q.distanceTo(player) >= min).sort((a, b) => a.distanceToSquared(player) - b.distanceToSquared(player));
+  return beyond.length > 0 ? beyond.slice(0, 4) : [...points];
 }

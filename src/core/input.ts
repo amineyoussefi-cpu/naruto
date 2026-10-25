@@ -6,7 +6,9 @@
 export type Action =
   | 'forward' | 'back' | 'left' | 'right'
   | 'sprint' | 'jump' | 'attack' | 'guard' | 'special' | 'kunai'
-  | 'concentrate' | 'dodge' | 'lockOn' | 'switchTarget' | 'pause';
+  | 'concentrate' | 'dodge' | 'lockOn' | 'switchTarget' | 'pause'
+  /** Synthetic: forward pressed twice quickly (no key of its own). */
+  | 'boost';
 
 export const KEY_BINDINGS: Record<Action, string[]> = {
   forward: ['KeyW', 'ArrowUp'],
@@ -24,7 +26,11 @@ export const KEY_BINDINGS: Record<Action, string[]> = {
   lockOn: ['KeyF'],
   switchTarget: ['Tab', 'WheelUp', 'WheelDown'],
   pause: ['Escape', 'KeyP'],
+  boost: [],
 };
+
+/** Max delay between two forward presses that counts as a double tap (ms). */
+export const DOUBLE_TAP_MS = 300;
 
 /** Key labels per layout for the help screens (UI is in French). */
 export const KEY_LABELS: Record<'qwerty' | 'azerty', Record<Action, string>> = {
@@ -32,11 +38,13 @@ export const KEY_LABELS: Record<'qwerty' | 'azerty', Record<Action, string>> = {
     forward: 'W', back: 'S', left: 'A', right: 'D', sprint: 'Maj', jump: 'Espace',
     attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'Q / Clic molette',
     concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
+    boost: 'W W (maintenir)',
   },
   azerty: {
     forward: 'Z', back: 'S', left: 'Q', right: 'D', sprint: 'Maj', jump: 'Espace',
     attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'A / Clic molette',
     concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
+    boost: 'Z Z (maintenir)',
   },
 };
 
@@ -44,6 +52,7 @@ export class InputManager {
   private held = new Set<string>();
   private pressedQueue = new Set<Action>();
   private codeToActions = new Map<string, Action[]>();
+  private lastForwardPress = -Infinity;
   private mouseDX = 0;
   private mouseDY = 0;
   private wheel = 0;
@@ -97,7 +106,15 @@ export class InputManager {
     if (!actions) return;
     if (actions.includes('pause')) { this.onPause?.(); return; }
     if (!this.enabled) return;
-    if (!this.held.has(code)) for (const a of actions) this.pressedQueue.add(a);
+    if (!this.held.has(code)) {
+      for (const a of actions) this.pressedQueue.add(a);
+      if (actions.includes('forward')) {
+        // Input timing only (not simulation): a quick second tap means "run faster".
+        const now = performance.now();
+        if (now - this.lastForwardPress < DOUBLE_TAP_MS) this.pressedQueue.add('boost');
+        this.lastForwardPress = now;
+      }
+    }
     this.held.add(code);
   }
 

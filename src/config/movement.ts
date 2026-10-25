@@ -4,6 +4,8 @@ export const MOVEMENT = {
   /** Storm-style pace: brisk run, very fast ninja sprint (Shift held). */
   runSpeed: 10,
   sprintSpeed: 17,
+  /** Double-tap forward (W/Z) and hold: fastest travel speed (m/s), free of chakra. */
+  boostSpeed: 26,
   /** Ground acceleration / braking (m/s²): near-instant starts and stops. */
   acceleration: 90,
   deceleration: 100,

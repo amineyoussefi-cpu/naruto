@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EnemyAI } from '../../src/ai/EnemyAI';
-import { WaveManager } from '../../src/ai/WaveManager';
+import * as THREE from 'three';
+import { WaveManager, pickSpawnPoints } from '../../src/ai/WaveManager';
 import { WAVES } from '../../src/config/waves';
 import { makeCtx, seeded } from './aiHelpers';
 
@@ -50,5 +51,21 @@ describe('WaveManager', () => {
     expect(wm.intermission).toBe(0);
     for (let i = 0; i < 60 * 10; i++) wm.update(DT);
     expect(wm.wave).toBe(0);
+  });
+});
+
+describe('pickSpawnPoints (big map)', () => {
+  const V = (x: number, z: number) => new THREE.Vector3(x, 0, z);
+  const player = V(0, 0);
+  it('keeps points inside the ring', () => {
+    const pts = [V(5, 0), V(20, 0), V(40, 0), V(90, 0)];
+    expect(pickSpawnPoints(pts, player, 18, 45).map((p) => p.x)).toEqual([20, 40]);
+  });
+  it('falls back to the nearest points beyond the minimum, never too close', () => {
+    const pts = [V(3, 0), V(100, 0), V(70, 0), V(200, 0)];
+    expect(pickSpawnPoints(pts, player, 18, 45).map((p) => p.x)).toEqual([70, 100, 200]);
+  });
+  it('never returns an empty list', () => {
+    expect(pickSpawnPoints([V(1, 0)], player, 18, 45)).toHaveLength(1);
   });
 });

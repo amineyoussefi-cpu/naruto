@@ -11,6 +11,8 @@ export interface GameEvents {
   technique: { id: number; name: 'special'; position: Vec3Like };
   projectileHit: { position: Vec3Like; hitActor: boolean };
   dodge: { id: number };
+  /** Double-tap forward: high-speed run started. */
+  speedBoost: { id: number };
   /** Chakra dash started; `homing` when it rushes at a target. */
   chakraDash: { id: number; homing: boolean };
   /** Substitution jutsu: a log is left at `from`, the ninja reappears at `to`. */

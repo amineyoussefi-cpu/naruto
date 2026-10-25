@@ -1,7 +1,7 @@
 /** Enemy archetypes and AI tuning. Owner: AI agent. Units: metres, seconds, radians. */
 export const ENEMIES = {
   melee: {
-    maxHp: 60, speed: 9.5, detectRange: 30, attackRange: 1.8, damage: 12,
+    maxHp: 60, speed: 9.5, detectRange: 60, attackRange: 1.8, damage: 12,
     // Storm pace: quick but still readable wind-up.
     telegraph: 0.32, active: 0.12, recovery: 0.4, cooldown: 0.95,
     retreatChance: 0.25, dodgeChance: 0.2, knockback: 4,
@@ -11,7 +11,7 @@ export const ENEMIES = {
     orbitSpeedFactor: 0.6,
   },
   ranged: {
-    maxHp: 40, speed: 7.5, detectRange: 35, preferredRange: 11, minRange: 6, damage: 9,
+    maxHp: 40, speed: 7.5, detectRange: 60, preferredRange: 11, minRange: 6, damage: 9,
     telegraph: 0.45, cooldown: 1.5, projectileSpeed: 26, knockback: 1.5,
     /** Throw animation hold after release, then recovery before moving again. */
     active: 0.2, recovery: 0.4,

@@ -53,7 +53,7 @@ export class PhysicsWorld {
     return new PhysicsWorld();
   }
 
-  addStaticBox(center: THREE.Vector3, half: THREE.Vector3, rotationY = 0, opts: { climbable?: boolean } = {}): RAPIER.Collider {
+  addStaticBox(center: THREE.Vector3, half: THREE.Vector3, rotationY = 0, opts: { climbable?: boolean; water?: boolean } = {}): RAPIER.Collider {
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rotationY);
     const desc = RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
       .setTranslation(center.x, center.y, center.z)
@@ -61,7 +61,41 @@ export class PhysicsWorld {
       .setCollisionGroups(WORLD_GROUPS);
     const c = this.world.createCollider(desc);
     if (opts.climbable) this.climbable.add(c.handle);
+    if (opts.water) this.water.add(c.handle);
     return c;
+  }
+
+  /**
+   * Static triangle-mesh collider from a Three geometry (terrain, sculpted rocks, mountains).
+   * `matrix` places the geometry in the world (defaults to identity: geometry already in world space).
+   * `water` marks a walk-on-water surface (see `isWater`).
+   */
+  addStaticMesh(geometry: THREE.BufferGeometry, matrix?: THREE.Matrix4, opts: { climbable?: boolean; water?: boolean } = {}): RAPIER.Collider {
+    const pos = geometry.getAttribute('position');
+    const v = new Float32Array(pos.count * 3);
+    const p = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      p.fromBufferAttribute(pos, i);
+      if (matrix) p.applyMatrix4(matrix);
+      v[i * 3] = p.x; v[i * 3 + 1] = p.y; v[i * 3 + 2] = p.z;
+    }
+    let idx: Uint32Array;
+    if (geometry.index) idx = Uint32Array.from(geometry.index.array as ArrayLike<number>);
+    else idx = Uint32Array.from({ length: pos.count }, (_, i) => i);
+    const c = this.world.createCollider(RAPIER.ColliderDesc.trimesh(v, idx).setCollisionGroups(WORLD_GROUPS));
+    if (opts.climbable) this.climbable.add(c.handle);
+    if (opts.water) this.water.add(c.handle);
+    return c;
+  }
+
+  /** Handles of walk-on-water surfaces (ninjas stand on them with chakra). */
+  readonly water = new Set<number>();
+
+  /** True when the ground right under `feet` is a water surface. */
+  isWater(feet: THREE.Vector3): boolean {
+    if (this.water.size === 0) return false;
+    const hit = this.raycast(new THREE.Vector3(feet.x, feet.y + 0.3, feet.z), new THREE.Vector3(0, -1, 0), 0.6, { worldOnly: true });
+    return !!hit && this.water.has(hit.collider.handle);
   }
 
   addStaticCylinder(center: THREE.Vector3, halfHeight: number, radius: number, opts: { climbable?: boolean } = {}): RAPIER.Collider {

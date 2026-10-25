@@ -12,5 +12,8 @@ export const WAVE_INTERMISSION = 3;
 export const WAVE_START_DELAY = 1.5;
 /** Seconds between successive enemy spawns inside a wave. */
 export const WAVE_SPAWN_STAGGER = 0.4;
+/** Waves spawn at points in this distance ring around the player (m), so fights stay close on the big map. */
+export const WAVE_SPAWN_MIN_DIST = 18;
+export const WAVE_SPAWN_MAX_DIST = 45;
 /** Random horizontal jitter radius around a spawn point. */
 export const WAVE_SPAWN_JITTER = 1.2;

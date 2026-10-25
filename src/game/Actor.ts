@@ -44,6 +44,8 @@ export class Actor {
   prevYaw = 0;
   grounded = false;
   climbing = false;
+  /** Standing on a water surface (walking on it with chakra). Updated by Game each step. */
+  onWater = false;
   /** Horizontal normal of the wall being walked on (valid while climbing, kept afterwards for blending out). */
   readonly wallNormal = new THREE.Vector3(0, 0, 1);
   /** Render-only: 0 = upright, 1 = standing on the wall. */
@@ -113,7 +115,7 @@ export class Actor {
     root.rotation.set(0, this.prevYaw + dy * alpha, 0);
     const speed = this.climbing ? this.velocity.length() : Math.hypot(this.velocity.x, this.velocity.z);
     this.orientOnWall(frameDt);
-    this.model.setFootChakra(this.climbing);
+    this.model.setFootChakra(this.climbing || this.onWater);
     this.model.update(frameDt, this.anim, this.animTime, speed);
   }
 

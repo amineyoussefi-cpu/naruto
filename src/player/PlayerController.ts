@@ -24,6 +24,8 @@ export class PlayerController {
   private readonly jumpAssist = new JumpAssist(MOVEMENT.coyoteTime, MOVEMENT.jumpBuffer);
   private readonly footsteps = new FootstepTimer();
   private sprinting = false;
+  /** Double-tap-forward high-speed run; lasts while forward stays held. */
+  private boosting = false;
   private airTime = 0;
   private airJumpsLeft: number = MOVEMENT.airJumps;
 
@@ -65,9 +67,15 @@ export class PlayerController {
     const sprintHeld = alive && moving && this.ctx.input.isHeld('sprint');
     // Sprint starts on the ground and keeps its momentum through a jump.
     this.sprinting = sprintHeld && (a.grounded || this.sprinting);
+    if (alive && c.allowMove && this.ctx.pressed.has('boost') && !this.boosting) {
+      this.boosting = true;
+      this.ctx.events.emit('speedBoost', { id: a.id });
+    }
+    if (!this.ctx.input.isHeld('forward') || !c.allowMove) this.boosting = false;
+    if (this.boosting) this.sprinting = true; // same ninja-run animation and footsteps, just faster
 
     this.cameraWish(axes, this.wish);
-    const speed = moving ? (this.sprinting ? MOVEMENT.sprintSpeed : MOVEMENT.runSpeed) * c.moveFactor : 0;
+    const speed = moving ? (this.boosting ? MOVEMENT.boostSpeed : this.sprinting ? MOVEMENT.sprintSpeed : MOVEMENT.runSpeed) * c.moveFactor : 0;
     this.wish.multiplyScalar(moving ? speed : 0);
 
     if (a.grounded) this.airJumpsLeft = MOVEMENT.airJumps;
@@ -243,7 +251,7 @@ export class PlayerController {
     a.knockback.set(0, 0, 0);
     a.climbing = false;
     a.grounded = false;
-    this.sprinting = false;
+    this.sprinting = this.boosting = false;
     this.airTime = 0;
     this.jumpAssist.reset();
     this.airJumpsLeft = MOVEMENT.airJumps;

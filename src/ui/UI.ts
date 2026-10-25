@@ -6,7 +6,7 @@ import { browserStorage, loadSettings, sanitizeSettings, saveSettings } from './
 type Overlay = 'controls' | 'settings' | null;
 
 const COMMANDS: [keyof GameApi['keyLabels'] | 'move', string][] = [
-  ['move', 'Se déplacer'], ['sprint', 'Appui : ruée de chakra vers la cible · maintenu : course ninja'],
+  ['move', 'Se déplacer'], ['boost', 'Double appui avant et maintenir : course ultra-rapide'], ['sprint', 'Appui : ruée de chakra vers la cible · maintenu : course ninja'],
   ['jump', 'Sauter, double saut en l’air (contre un mur : marcher dessus)'],
   ['attack', 'Combo de 5 coups à tête chercheuse (le dernier projette l’ennemi)'], ['guard', 'Garde'], ['special', 'Rasengan (chakra)'],
   ['kunai', 'Lancer un kunaï'], ['concentrate', 'Concentrer le chakra'], ['dodge', 'Esquive · quand vous êtes touché : permutation'],

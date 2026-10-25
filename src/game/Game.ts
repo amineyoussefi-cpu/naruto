@@ -262,6 +262,7 @@ export class Game implements GameApi {
     p.resetControl();
     this.playerCombat.reset();
     this.playerController.reset(this.arena.playerSpawn);
+    p.onWater = false;
     p.beginStep();
     this.camera.reset();
     this.ctx.time = 0;
@@ -284,6 +285,7 @@ export class Game implements GameApi {
     this.playerCombat.update(dt);
     this.playerController.update(dt);
     this.ai.update(dt);
+    for (const a of ctx.actors) a.onWater = a.alive && a.grounded && this.physics.isWater(a.position);
     this.combat.update(dt);
     this.fx.update(dt);
     this.waves.update(dt);
@@ -320,10 +322,12 @@ export class Game implements GameApi {
       const alpha = this.stepper.alpha;
       for (const a of this.ctx.actors) a.syncModel(alpha, frameDt);
       this.camera.update(frameDt, alpha);
+      this.arena.update?.(this.ctx.player.model.root.position, frameDt);
     } else if (this.state === 'menu') {
       // Idle showcase: models animate, nothing simulates.
       for (const a of this.ctx.actors) a.syncModel(1, frameDt);
       this.camera.update(frameDt, 1);
+      this.arena.update?.(this.ctx.player.model.root.position, frameDt);
     } else {
       // Paused / ended: frozen frame, still re-rendered so the UI overlay stays live.
       this.camera.update(0, 1);

@@ -4,393 +4,330 @@ import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import { toon } from '../render/toon';
 import { glowMaterial } from '../render/PostFX';
 import { Batcher } from './Batcher';
-import { buildSky, SKY } from './Sky';
+import { buildSky } from './Sky';
 import { buildVillage, makeKitGeometries } from './Village';
+import { boulderGeometry, seaStackGeometry, treeGeometries, NATURE } from './Nature';
+import { farSeaGeometry, nearWaterGeometry, waterMaterial } from './Water';
+import { coastZ, estuaryE, fbm2, hash1, heightAt, isOpenGround, noise2, normalAt, streamDist, terrainColor, WORLD } from './terrain';
 
 export interface ArenaInfo {
   playerSpawn: THREE.Vector3;
   enemySpawns: THREE.Vector3[];
+  /** Per render frame: keep the shadow camera (and anything view-dependent) around `focus` (player). Optional. */
+  update?(focus: THREE.Vector3, frameDt: number): void;
   dispose(): void;
 }
 
-/**
- * Arena layout (metres). Plateau top is y = 0, spanning x ∈ [-35, 35], z ∈ [-26, 35].
- * The south edge opens onto a chasm crossed by a rope bridge to a small shrine ledge (fall zone).
- */
-const LAYOUT = {
-  plateau: { minX: -35, maxX: 35, minZ: -26, maxZ: 35, depth: 12 },
-  wallThickness: 2,
-  wallSegment: 8,
-  /** Gap in the south wall that leads to the bridge (|x| < this). */
-  southOpening: 10,
-  bridge: { halfWidth: 1.5, fromZ: -26, toZ: -40, thickness: 0.3 },
-  ledge: { halfX: 9, minZ: -54, maxZ: -40 },
-  /** Climbable rock pillars: [x, z, sizeX|radius, height, sizeZ (0 = cylinder), rotY]. */
-  pillars: [
-    [12, 10, 4, 8, 4, 0.3], [-14, 8, 2.5, 9, 0, 0], [-20, -14, 5, 12, 5, 0.5], [0, 24, 3, 7, 0, 0],
-    [24, 18, 4, 10, 6, -0.2], [-25, 22, 2.2, 5, 0, 0], [16, -14, 4, 6, 4, 0],
-  ] as const,
-  /** Climbable training wall: [x, z, width, height, thickness]. */
-  trainingWall: [-6, -8, 8, 4, 1.2] as const,
-  /** Terraces (stone base + wooden deck, climbable): [x, z, size, topY]. A→B→pillar form a jump chain. */
-  terraces: [[4, -14, 6, 2], [10, -14, 6, 4], [-12, -15, 5, 7]] as const,
-  crates: [[6, 4, 0], [7.1, 4.2, 0], [6.5, 4.1, 1], [-8, 14, 0], [-8, 15.1, 0], [-9.1, 14.4, 0], [-8.5, 14.6, 1], [20, -2, 0], [20.2, -3.1, 0], [-24, -2, 0]] as const,
-  crateSize: 1,
-  /** Logs: [x, z, rotY], radius / length below. */
-  logs: [[-3, 11, 0.6], [14, -4, 1.2], [-18, 0, 0.2], [22, 6, 2.0]] as const,
-  logRadius: 0.35, logLength: 3,
-  posts: [[-5, 5], [-3.5, 6.5], [5, -5], [6.5, -3.5]] as const,
-  postRadius: 0.18, postHeight: 1.6,
-  trees: [[-30, 30], [-22, 31.5], [30, 30], [31, 10], [-31, 0], [-30, -18], [30, -21], [14, 31], [-12, 31.5], [31.5, -8], [-31.5, 14]] as const,
-  trunkRadius: 0.32, trunkHeight: 3,
-  playerSpawn: [0, 0.1, 0] as const,
-  enemySpawns: [[-26, -22], [25, -22], [28, 4], [-28, 10], [-12, 26], [12, 26], [-2, -21], [28, 28]] as const,
-  /** Stone lanterns (tōrō) along the bridge path and by the shrine gate: [x, z]; collider radius. */
-  stoneLanterns: [[-4, -19.5], [4, -19.5], [-4, -24.5], [4, -24.5], [-4.4, -45], [4.4, -45]] as const,
-  stoneLanternRadius: 0.45,
-  /** Wooden poles carrying paper-lantern strings along the north and west cliffs: [x, z]; height, collider radius. */
-  lanternPoles: [[-24, 32.5], [-8, 32.5], [8, 32.5], [24, 32.5], [-32.5, 20], [-32.5, 4], [-32.5, -12]] as const,
-  lanternPoleHeight: 6, lanternPoleRadius: 0.16,
-  /** Paper lanterns per string and string sag (m). */
-  lanternsPerString: 6, lanternSag: 1.4,
-  /** Extra dirt paths (visual): [x, z, width, length, rotY]. */
-  paths: [[14, 4, 2.6, 16, 1.3], [-15, 6, 2.6, 18, -1.1], [0, 16, 2.4, 14, 0]] as const,
-  /** Lighting / atmosphere. */
-  sunDir: [30, 50, 22] as const, sunColor: 0xfff1d6, sunIntensity: 2.5, hemiSky: 0xbfe0ff, hemiGround: 0x6d8a4a, hemiIntensity: 2.4,
-  shadowExtent: 46, shadowMapSize: 2048,
-  fogNear: 80, fogFar: 260,
-  colors: {
-    grass: 0x79b84a, dirt: 0xd9b77a, rock: 0xc4a684, rockDark: 0xa98a6a, stone: 0xa39a8a, wood: 0x9a6a3e, timber: 0x5a3a26, deck: 0xb5844f,
-    crate: 0xc29055, leaves: 0x5fae3f, leavesLight: 0x7cc24a, rope: 0xe0c890, torii: 0xc8372d, straw: 0xe6c97a,
-    lantern: 0xffb060, lantern2: 0xff7048, wire: 0x3a2a22,
+/** Scatter, lighting and atmosphere tuning for the coastal valley (layout lives in `WORLD`). */
+const ARENA = {
+  /** Scatter tile size (m): instanced props are split per tile for frustum culling. */
+  tile: 60,
+  /** Enemy spawn candidates: jittered grid step and half extent; clearance kept free of props. */
+  spawnStep: 9, spawnExtent: 100, spawnClear: 3, spawnMinFromPlayer: 12,
+  /** Boulders: candidate grid step, shoreline / meadow chance, size ranges (m), collider and climb thresholds. */
+  boulders: { step: 7, shoreChance: 0.55, meadowChance: 0.12, shore: [0.6, 2.6], meadow: [0.5, 2.2], big: [2.5, 4.2], bigChance: 0.12, collideMin: 0.9, climbMin: 2, variants: 5 },
+  /** Large climbable rock formations: [x, z, size, flat-top cut]. */
+  formations: [[-40, -30, 7, 0.25], [40, -40, 6, 0.3], [-60, 5, 8, 0.25], [30, 2, 5, 0.3], [-14, -82, 9, 0.2], [60, 34, 6, 0.25], [-88, 40, 7, 0.25]] as [number, number, number, number][],
+  /** Trees: candidate step, extent (beyond the boundary for a dense backdrop), forest noise threshold, meadow chance. */
+  trees: { step: 5, extent: 160, forest: 0.12, meadow: 0.025, clearSpawn: 15, trunkHeight: [2.6, 3.4], scale: [0.8, 1.4], collideR: 128 },
+  greens: {
+    round: [0x5fae3f, 0x7cc24a, 0x4f9a3a, 0x8fbf3a, 0x3f9a5a] as const,
+    wide: [0x6db644, 0x9ccf55, 0x5a9e3c, 0x4a8f4a] as const,
+    tall: [0x3f8f4a, 0x4f9a3a, 0x2f7a45, 0x6aa843] as const,
+    bush: [0x4f9a3a, 0x6aa843, 0x3b7d33, 0x7cb342, 0x5d9e5a] as const,
   },
+  /** Tall grass and flowers: counts, extent. */
+  tufts: 2600, flowers: 1100, grassExtent: 115,
+  flowerColors: [0xffffff, 0xfff3a0, 0xffe066, 0xffffff, 0xffd0e0] as const,
+  driftwood: 16,
+  /** Distant sea stacks on the horizon (visual): [x, z, radius, height]. */
+  farStacks: [[95, 240, 12, 16], [-30, 310, 16, 9], [190, 200, 9, 22]] as [number, number, number, number][],
+  /** Lighting: light direction (higher than the visual sun so flat ground stays in the lit toon band), sky/water sun (low over the sea). */
+  lightDir: [-0.25, 0.8, 1] as const, skySunDir: [-0.12, 0.2, 1] as const,
+  sunColor: 0xffe6bd, sunIntensity: 2.6, hemiSky: 0xcfe6ff, hemiGround: 0x7a9a50, hemiIntensity: 2.3,
+  shadowExtent: 55, shadowMapSize: 2048, shadowDistance: 150,
+  fogColor: 0xcdeaf2, fogNear: 150, fogFar: 520,
 };
 
-/** Deterministic hash in [0,1) so the arena looks the same on every run. */
-const hash = (n: number) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
-
 /**
- * Builds the arena (meshes + static colliders), sky and lights.
- * Climbable surfaces are created with `{ climbable: true }`.
+ * Builds the coastal valley (terrain, water, rocks, trees, hamlet), sky and lights with their colliders.
+ * Terrain, rocks, the sea stack and house walls are climbable; every water surface is walk-on-water.
  */
 export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo {
-  const L = LAYOUT, C = L.colors;
+  const A = ARENA, W = WORLD;
   const group = new THREE.Group();
   group.name = 'arena';
   scene.add(group);
   const disposables: { dispose(): void }[] = [];
   const colliders: RAPIER.Collider[] = [];
   const own = <T extends { dispose(): void }>(x: T): T => { disposables.push(x); return x; };
-  const box = (c: THREE.Vector3, half: THREE.Vector3, rot = 0, climbable = false) => colliders.push(physics.addStaticBox(c, half, rot, { climbable }));
-  const cyl = (c: THREE.Vector3, hh: number, r: number, climbable = false) => colliders.push(physics.addStaticCylinder(c, hh, r, { climbable }));
-  const add = (geometry: THREE.BufferGeometry, material: THREE.Material | THREE.Material[], cast = true, receive = true) => {
+  const add = (geometry: THREE.BufferGeometry, material: THREE.Material, cast = true, receive = true) => {
     const m = new THREE.Mesh(geometry, material);
     m.castShadow = cast; m.receiveShadow = receive;
     group.add(m);
     return m;
   };
+  const instanced = (geo: THREE.BufferGeometry, material: THREE.Material, items: { m: THREE.Matrix4; c: THREE.Color }[], cast = true, receive = true) => {
+    // One InstancedMesh per map tile so camera and shadow frustum culling skip far scatter.
+    const tiles = new Map<string, typeof items>();
+    for (const it of items) {
+      const k = `${Math.floor(it.m.elements[12] / A.tile)},${Math.floor(it.m.elements[14] / A.tile)}`;
+      const list = tiles.get(k) ?? [];
+      list.push(it); tiles.set(k, list);
+    }
+    for (const list of tiles.values()) {
+      const im = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((it, i) => { im.setMatrixAt(i, it.m); im.setColorAt(i, it.c); });
+      im.castShadow = cast; im.receiveShadow = receive;
+      im.computeBoundingSphere();
+      group.add(im); own(im);
+    }
+  };
+  const blocked: [number, number, number][] = [];
+  const block = (x: number, z: number, r: number) => { blocked.push([x, z, r]); };
+  const isBlocked = (x: number, z: number, pad: number) => blocked.some(([bx, bz, r]) => (x - bx) ** 2 + (z - bz) ** 2 < (r + pad) ** 2);
+  const v3 = new THREE.Vector3(), q = new THREE.Quaternion(), yAxis = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
+  const mat4 = (x: number, y: number, z: number, yaw: number, sx: number, sy = sx, sz = sx) =>
+    new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q.setFromAxisAngle(yAxis, yaw), new THREE.Vector3(sx, sy, sz));
+  const pickHex = (arr: readonly number[], r: number) => arr[Math.floor(r * arr.length) % arr.length];
 
   const mat = {
-    grass: own(toon(C.grass)), dirt: own(toon(C.dirt)), rock: own(toon(C.rock)), rockDark: own(toon(C.rockDark)),
-    wood: own(toon(C.wood)), deck: own(toon(C.deck)), crate: own(toon(C.crate)), leaves: own(toon(C.leaves)),
-    leavesLight: own(toon(C.leavesLight)), rope: own(toon(C.rope)), torii: own(toon(C.torii)), timber: own(toon(C.timber)),
-    white: own(toon(0xffffff)), ground: own(toon(C.grass, { rim: 0 })), path: own(toon(C.dirt, { rim: 0 })),
+    ground: own(toon(0xffffff, { vertexColors: true, rim: 0 })),
+    vc: own(toon(0xffffff, { vertexColors: true, rim: 0.2 })),
+    plain: own(toon(0xffffff, { rim: 0.2 })),
+    flat: own(toon(0xffffff, { rim: 0 })),
   };
-  const unitBox = own(new THREE.BoxGeometry(1, 1, 1));
+
+  // ---- Terrain: chunked heightfield with painted vertex colours; one climbable trimesh collider per chunk.
+  {
+    const n = Math.round((W.extent * 2) / W.cell), per = n / W.chunks, nrm = new THREE.Vector3();
+    for (let cz = 0; cz < W.chunks; cz++) for (let cx = 0; cx < W.chunks; cx++) {
+      const pos: number[] = [], nor: number[] = [], clr: number[] = [], idx: number[] = [];
+      for (let j = 0; j <= per; j++) for (let i = 0; i <= per; i++) {
+        const x = -W.extent + (cx * per + i) * W.cell, z = -W.extent + (cz * per + j) * W.cell, h = heightAt(x, z);
+        normalAt(x, z, nrm);
+        terrainColor(x, z, h, nrm.y, col);
+        pos.push(x, h, z); nor.push(nrm.x, nrm.y, nrm.z); clr.push(col.r, col.g, col.b);
+      }
+      for (let j = 0; j < per; j++) for (let i = 0; i < per; i++) {
+        const a = j * (per + 1) + i, b = a + 1, c = a + per + 1, d = c + 1;
+        idx.push(a, c, b, b, c, d);
+      }
+      const g = own(new THREE.BufferGeometry());
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(clr, 3));
+      g.setIndex(idx);
+      g.computeBoundingSphere();
+      add(g, mat.ground, true, true);
+      colliders.push(physics.addStaticMesh(g, undefined, { climbable: true }));
+    }
+  }
+
+  // ---- Water: near grid (walk-on-water collider) + far sea plane out to the horizon.
+  const skySun = new THREE.Vector3(...A.skySunDir).normalize();
+  const waterMat = own(waterMaterial(skySun));
+  {
+    const near = own(nearWaterGeometry()), far = own(farSeaGeometry());
+    const nm = add(near, waterMat, false, false), fm = add(far, waterMat, false, false);
+    nm.frustumCulled = fm.frustumCulled = false;
+    colliders.push(physics.addStaticMesh(near, undefined, { water: true }));
+    // Render-only animation clock (never touches the simulation).
+    nm.onBeforeRender = () => { waterMat.uniforms.time.value = performance.now() / 1000; };
+  }
+
+  // ---- Sea stack (tall climbable cliff on the right coast) and distant stacks on the horizon.
+  {
+    const S = W.stack, geo = own(seaStackGeometry(S.radius, S.height, 3));
+    add(geo, mat.vc).position.set(S.x, 0, S.z);
+    colliders.push(physics.addStaticMesh(geo, new THREE.Matrix4().makeTranslation(S.x, 0, S.z), { climbable: true }));
+    block(S.x, S.z, S.radius * 1.3);
+    A.farStacks.forEach(([x, z, r, h], i) => { add(own(seaStackGeometry(r, h, 11 + i)), mat.vc, false, false).position.set(x, 0, z); });
+  }
+
+  // ---- Boulders: rounded grey rocks with mossy tops, clustered at shores, half-submerged in streams, scattered on grass.
+  {
+    const B = A.boulders, geos = Array.from({ length: B.variants }, (_, i) => own(boulderGeometry(i + 1)));
+    const flatGeos = [own(boulderGeometry(21, 0.25)), own(boulderGeometry(22, 0.3))];
+    const items = geos.map(() => [] as { m: THREE.Matrix4; c: THREE.Color }[]), flatItems = flatGeos.map(() => [] as { m: THREE.Matrix4; c: THREE.Color }[]);
+    const place = (x: number, z: number, s: number, seed: number, flat: number) => {
+      const yaw = hash1(seed * 1.7) * 6.28, sy = s * (0.75 + hash1(seed * 2.3) * 0.5), y = heightAt(x, z) - s * 0.25;
+      const m = mat4(x, y, z, yaw, s * (0.9 + hash1(seed) * 0.3), sy, s);
+      const c = new THREE.Color().setScalar(0.92 + hash1(seed * 5.1) * 0.14);
+      const k = Math.floor(hash1(seed * 9.7) * (flat ? flatGeos.length : geos.length));
+      (flat ? flatItems : items)[k].push({ m, c });
+      if (s >= B.collideMin) colliders.push(physics.addStaticMesh((flat ? flatGeos : geos)[k], m, { climbable: s >= B.climbMin }));
+      block(x, z, s * 1.1);
+    };
+    A.formations.forEach(([x, z, s, cut], i) => place(x, z, s, 900 + i, cut));
+    const E = 125;
+    for (let gz = -E; gz <= E; gz += B.step) for (let gx = -E; gx <= E; gx += B.step) {
+      const seed = gx * 13.1 + gz * 7.7, x = gx + (hash1(seed) - 0.5) * B.step, z = gz + (hash1(seed + 1) - 0.5) * B.step;
+      if (Math.hypot(x, z) > E || Math.hypot(x - W.spawn.x, z - W.spawn.z) < W.spawn.blend || isBlocked(x, z, 1)) continue;
+      const h = heightAt(x, z), shore = h > W.waterY - 0.6 && h < W.waterY + 1.4 && z < coastZ(x) + 6;
+      const r = hash1(seed + 2), sz = hash1(seed + 3);
+      if (shore && r < B.shoreChance) place(x, z, B.shore[0] + sz * (B.shore[1] - B.shore[0]), seed, 0);
+      else if (!shore && h > W.waterY && h < 30 && r < B.meadowChance) {
+        const big = hash1(seed + 4) < B.bigChance;
+        place(x, z, big ? B.big[0] + sz * (B.big[1] - B.big[0]) : B.meadow[0] + sz * (B.meadow[1] - B.meadow[0]), seed, 0);
+      }
+    }
+    geos.forEach((g, i) => instanced(g, mat.vc, items[i]));
+    flatGeos.forEach((g, i) => instanced(g, mat.vc, flatItems[i]));
+  }
+
+  // ---- Hamlet, bridge, torii, stone lanterns.
   const kit = makeKitGeometries();
   Object.values(kit).forEach(own);
-  /** Decorative instanced parts (white material, colour per instance) and glowing lanterns. */
-  const deco = new Batcher(), glow = new Batcher();
-
-  // --- Ground slabs (grass top, rock sides): plateau and far ledge.
-  const slab = (minX: number, maxX: number, minZ: number, maxZ: number, depth: number) => {
-    const half = new THREE.Vector3((maxX - minX) / 2, depth / 2, (maxZ - minZ) / 2);
-    const c = new THREE.Vector3((minX + maxX) / 2, -depth / 2, (minZ + maxZ) / 2);
-    const m = add(unitBox, [mat.rock, mat.rock, mat.ground, mat.rock, mat.rock, mat.rock], false, true);
-    m.position.copy(c);
-    m.scale.set(half.x * 2, depth, half.z * 2);
-    box(c, half);
-  };
-  const P = L.plateau;
-  slab(P.minX, P.maxX, P.minZ, P.maxZ, P.depth);
-  slab(-L.ledge.halfX, L.ledge.halfX, L.ledge.minZ, L.ledge.maxZ, P.depth * 0.6);
-
-  // Training circle and a dirt path towards the bridge (visual only).
-  const circle = add(own(new THREE.CircleGeometry(8, 40).rotateX(-Math.PI / 2)), mat.path, false, true);
-  circle.position.y = 0.015;
-  const pathGeo = own(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
-  const path = add(pathGeo, mat.path, false, true);
-  path.position.set(0, 0.012, -17); path.scale.set(3.2, 1, 18);
-  for (const [x, z, w, len, rot] of L.paths) {
-    const p = add(pathGeo, mat.path, false, true);
-    p.position.set(x, 0.01, z); p.scale.set(w, 1, len); p.rotation.y = rot;
-  }
-
-  // --- Outer climbable cliff ring (instanced segments with an outward boulder cap).
-  const wallBoxes: { c: THREE.Vector3; s: THREE.Vector3; rot: number; collide: boolean }[] = [];
-  const t = L.wallThickness;
-  const run = (x0: number, z0: number, x1: number, z1: number) => {
-    const len = Math.hypot(x1 - x0, z1 - z0);
-    const n = Math.max(1, Math.round(len / L.wallSegment));
-    const ux = (x1 - x0) / len, uz = (z1 - z0) / len;
-    const rot = Math.atan2(-uz, ux); // box local X along the run
-    for (let i = 0; i < n; i++) {
-      const k = (i + 0.5) / n;
-      const h = 9 + Math.round(hash(x0 + z0 * 7 + i * 13) * 4);
-      const cx = x0 + (x1 - x0) * k, cz = z0 + (z1 - z0) * k;
-      const segLen = len / n + 0.4;
-      wallBoxes.push({ c: new THREE.Vector3(cx, h / 2, cz), s: new THREE.Vector3(segLen, h, t), rot, collide: true });
-      // Outward cap: points away from the arena centre, no collider (unreachable behind the wall).
-      const ox = -uz, oz = ux;
-      const sign = ox * cx + oz * cz > 0 ? 1 : -1;
-      const ch = h + 1 + hash(i + x1) * 2.5;
-      wallBoxes.push({ c: new THREE.Vector3(cx + ox * sign * 1.6, ch / 2, cz + oz * sign * 1.6), s: new THREE.Vector3(segLen * 0.7, ch, 2.4), rot: rot + (hash(i * 3 + z1) - 0.5) * 0.3, collide: false });
-    }
-  };
-  const W = P.maxX + t / 2;
-  run(-W, P.maxZ + t / 2, W, P.maxZ + t / 2); // north
-  run(W, P.minZ - t / 2, W, P.maxZ + t / 2); // east
-  run(-W, P.minZ - t / 2, -W, P.maxZ + t / 2); // west
-  run(-W, P.minZ - t / 2, -L.southOpening, P.minZ - t / 2); // south-west
-  run(L.southOpening, P.minZ - t / 2, W, P.minZ - t / 2); // south-east
-  const walls = new THREE.InstancedMesh(unitBox, mat.white, wallBoxes.length);
-  walls.castShadow = true; walls.receiveShadow = true;
-  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), yAxis = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
-  wallBoxes.forEach((b, i) => {
-    walls.setMatrixAt(i, m4.compose(b.c, q.setFromAxisAngle(yAxis, b.rot), b.s));
-    walls.setColorAt(i, col.set(b.collide ? C.rock : C.rockDark).multiplyScalar(0.92 + hash(i) * 0.14));
-    if (b.collide) box(b.c, b.s.clone().multiplyScalar(0.5), b.rot, true);
-    // Visual strata: darker bands, a grass lip on top and a chunky boulder on the outer ridge.
-    deco.frame(b.c.x, 0, b.c.z, b.rot);
-    const bands = b.collide ? [0.32, 0.68] : [0.5];
-    for (const k of bands) deco.put(kit.box, col.set(C.rockDark).multiplyScalar(0.95 + hash(i + k) * 0.1), 0, b.s.y * k, 0, b.s.x * 0.995, 1.1 + hash(i * 2) * 0.6, b.s.z + 0.24);
-    deco.put(kit.box, col.set(C.grass).multiplyScalar(0.95 + hash(i * 5) * 0.1), 0, b.s.y - 0.2, 0, b.s.x + 0.2, 0.25, b.s.z + 0.2);
-    if (!b.collide) deco.put(kit.rock, col.set(C.rock), (hash(i * 7) - 0.5) * b.s.x * 0.5, b.s.y + 0.3, 0, 1.6 + hash(i) * 1.2, 1.2 + hash(i * 3), 1.6 + hash(i * 9), hash(i) * 3);
+  const solid = new Batcher(), glow = new Batcher();
+  buildVillage({
+    solid, glow, kit, block,
+    box: (c, half, rot, climbable = false) => colliders.push(physics.addStaticBox(c, half, rot, { climbable })),
+    cyl: (c, hh, r) => colliders.push(physics.addStaticCylinder(c, hh, r)),
+    mesh: (geo, color, collide) => {
+      own(geo);
+      add(geo, own(toon(color)));
+      if (collide) colliders.push(physics.addStaticMesh(geo));
+    },
   });
-  group.add(walls);
-  disposables.push(walls);
 
-  // --- Rock pillars (climbable, flat walkable tops).
-  const pillarCyl = own(new THREE.CylinderGeometry(1, 1.12, 1, 8));
-  pillarCyl.translate(0, 0.5, 0);
-  const capGeo = own(new THREE.CylinderGeometry(1.04, 1, 0.25, 8));
-  for (const [x, z, sx, h, sz, rot] of L.pillars) {
-    if (sz === 0) {
-      const m = add(pillarCyl, mat.rock);
-      m.position.set(x, 0, z); m.scale.set(sx, h, sx); m.rotation.y = hash(x) * 2;
-      const cap = add(capGeo, mat.grass, false);
-      cap.position.set(x, h + 0.02, z); cap.scale.set(sx, 1, sx);
-      cyl(new THREE.Vector3(x, h / 2, z), h / 2, sx, true);
-    } else {
-      const m = add(unitBox, mat.rock);
-      m.position.set(x, h / 2, z); m.scale.set(sx, h, sz); m.rotation.y = rot;
-      const cap = add(unitBox, mat.grass, false);
-      cap.position.set(x, h + 0.05, z); cap.scale.set(sx + 0.15, 0.12, sz + 0.15); cap.rotation.y = rot;
-      box(new THREE.Vector3(x, h / 2, z), new THREE.Vector3(sx / 2, h / 2, sz / 2), rot, true);
-    }
+  // ---- Enemy spawn points (reserved before trees so they stay clear).
+  const enemySpawns: THREE.Vector3[] = [];
+  for (let gz = -A.spawnExtent; gz <= A.spawnExtent; gz += A.spawnStep) for (let gx = -A.spawnExtent; gx <= A.spawnExtent; gx += A.spawnStep) {
+    const x = gx + (hash1(gx * 3.3 + gz) - 0.5) * 3, z = gz + (hash1(gz * 5.1 - gx) - 0.5) * 3;
+    if (Math.hypot(x - W.spawn.x, z - W.spawn.z) < A.spawnMinFromPlayer || isBlocked(x, z, A.spawnClear) || !isOpenGround(x, z)) continue;
+    let y = -Infinity;
+    for (const [dx, dz] of [[0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5]]) y = Math.max(y, heightAt(x + dx, z + dz));
+    enemySpawns.push(new THREE.Vector3(x, y + 0.2, z));
+    block(x, z, A.spawnClear);
   }
+
+  // ---- Trees: forests on the plateau and back hills, clumps on the meadow, bushes, dead trees on islets.
   {
-    const [x, z, w, h, d] = L.trainingWall;
-    const m = add(unitBox, mat.rockDark);
-    m.position.set(x, h / 2, z); m.scale.set(w, h, d);
-    box(new THREE.Vector3(x, h / 2, z), new THREE.Vector3(w / 2, h / 2, d / 2), 0, true);
-    // Painted target marks on the wall (visual only).
-    for (let i = -1; i <= 1; i++) {
-      const mark = add(own(new THREE.RingGeometry(0.35, 0.5, 20)), mat.torii, false, false);
-      mark.position.set(x + i * 2.4, h * 0.55, z + d / 2 + 0.01);
-    }
-  }
-  // Terraces: stone base + wooden deck.
-  for (const [x, z, s, top] of L.terraces) {
-    const base = add(unitBox, mat.rockDark);
-    base.position.set(x, (top - 0.3) / 2, z); base.scale.set(s, top - 0.3, s);
-    const deck = add(unitBox, mat.deck);
-    deck.position.set(x, top - 0.15, z); deck.scale.set(s + 0.3, 0.3, s + 0.3);
-    box(new THREE.Vector3(x, top / 2, z), new THREE.Vector3(s / 2 + 0.15, top / 2, s / 2 + 0.15), 0, true);
-  }
-
-  // --- Low obstacles (instanced): crates, logs, training posts.
-  const cs = L.crateSize;
-  const crates = new THREE.InstancedMesh(unitBox, mat.crate, L.crates.length);
-  crates.castShadow = crates.receiveShadow = true;
-  L.crates.forEach(([x, z, layer], i) => {
-    const c = new THREE.Vector3(x, cs / 2 + layer * cs, z);
-    const rot = hash(i * 5) * 0.6;
-    crates.setMatrixAt(i, m4.compose(c, q.setFromAxisAngle(yAxis, rot), new THREE.Vector3(cs, cs, cs)));
-    box(c, new THREE.Vector3(cs / 2, cs / 2, cs / 2), rot);
-  });
-  group.add(crates); disposables.push(crates);
-
-  const logGeo = own(new THREE.CylinderGeometry(L.logRadius, L.logRadius, L.logLength, 8).rotateZ(Math.PI / 2));
-  const logs = new THREE.InstancedMesh(logGeo, mat.wood, L.logs.length);
-  logs.castShadow = logs.receiveShadow = true;
-  L.logs.forEach(([x, z, rot], i) => {
-    const c = new THREE.Vector3(x, L.logRadius, z);
-    logs.setMatrixAt(i, m4.compose(c, q.setFromAxisAngle(yAxis, rot), new THREE.Vector3(1, 1, 1)));
-    box(c, new THREE.Vector3(L.logLength / 2, L.logRadius, L.logRadius), rot);
-  });
-  group.add(logs); disposables.push(logs);
-
-  const postGeo = own(new THREE.CylinderGeometry(L.postRadius, L.postRadius * 1.1, L.postHeight, 8).translate(0, L.postHeight / 2, 0));
-  const armGeo = own(new THREE.BoxGeometry(0.9, 0.12, 0.12).translate(0, L.postHeight * 0.7, 0));
-  const posts = new THREE.InstancedMesh(postGeo, mat.wood, L.posts.length);
-  const arms = new THREE.InstancedMesh(armGeo, mat.wood, L.posts.length);
-  posts.castShadow = arms.castShadow = true;
-  L.posts.forEach(([x, z], i) => {
-    m4.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(yAxis, hash(i + 9) * Math.PI), new THREE.Vector3(1, 1, 1));
-    posts.setMatrixAt(i, m4); arms.setMatrixAt(i, m4);
-    // Straw-wrapped training dummy body and head (visual).
-    deco.frame(x, 0, z, hash(i + 9) * Math.PI)
-      .put(kit.cylLow, C.straw, 0, 0.45, 0, L.postRadius * 1.6, 0.75, L.postRadius * 1.6)
-      .put(kit.cylLow, C.rope, 0, 0.75, 0, L.postRadius * 1.7, 0.12, L.postRadius * 1.7)
-      .put(kit.ball, C.straw, 0, L.postHeight + 0.12, 0, 0.24, 0.26, 0.24);
-    cyl(new THREE.Vector3(x, L.postHeight / 2, z), L.postHeight / 2, L.postRadius);
-  });
-  group.add(posts, arms); disposables.push(posts, arms);
-
-  // --- Trees (trunk collider) and decorative scatter (no colliders).
-  const trunkGeo = own(new THREE.CylinderGeometry(L.trunkRadius * 0.7, L.trunkRadius, L.trunkHeight, 6).translate(0, L.trunkHeight / 2, 0));
-  const trunks = new THREE.InstancedMesh(trunkGeo, mat.wood, L.trees.length);
-  const crowns = new THREE.InstancedMesh(kit.crownDark, mat.leaves, L.trees.length);
-  const crowns2 = new THREE.InstancedMesh(kit.crownLight, mat.leavesLight, L.trees.length);
-  for (const im of [trunks, crowns, crowns2]) im.castShadow = true;
-  L.trees.forEach(([x, z], i) => {
-    const s = 0.9 + hash(i * 11) * 0.5;
-    m4.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(yAxis, hash(i) * 6), new THREE.Vector3(s, s, s));
-    trunks.setMatrixAt(i, m4); crowns.setMatrixAt(i, m4); crowns2.setMatrixAt(i, m4);
-    cyl(new THREE.Vector3(x, (L.trunkHeight * s) / 2, z), (L.trunkHeight * s) / 2, L.trunkRadius * s);
-  });
-  group.add(trunks, crowns, crowns2); disposables.push(trunks, crowns, crowns2);
-
-  const tuftGeo = own(new THREE.ConeGeometry(0.12, 0.45, 4).translate(0, 0.2, 0));
-  const tufts = new THREE.InstancedMesh(tuftGeo, mat.leavesLight, 340);
-  const pebbleGeo = own(new THREE.DodecahedronGeometry(0.4, 0));
-  const pebbles = new THREE.InstancedMesh(pebbleGeo, mat.rock, 40);
-  pebbles.castShadow = true; pebbles.receiveShadow = true;
-  const scatter = (im: THREE.InstancedMesh, seed: number, scaleMin: number, scaleVar: number) => {
-    for (let i = 0; i < im.count; i++) {
-      let x = 0, z = 0;
-      for (let tries = 0; tries < 6; tries++) {
-        x = P.minX + 2 + hash(seed + i * 2.13 + tries) * (P.maxX - P.minX - 4);
-        z = P.minZ + 2 + hash(seed + i * 3.71 + tries * 7) * (P.maxZ - P.minZ - 4);
-        if (Math.hypot(x, z) > 9 && Math.abs(x) > 2.5) break; // keep the centre circle and path clear
+    const T = A.trees, G = treeGeometries();
+    Object.values(G).forEach(own);
+    const trunks: { m: THREE.Matrix4; c: THREE.Color }[] = [];
+    const crowns = { round: [] as { m: THREE.Matrix4; c: THREE.Color }[], wide: [] as { m: THREE.Matrix4; c: THREE.Color }[], tall: [] as { m: THREE.Matrix4; c: THREE.Color }[], bush: [] as { m: THREE.Matrix4; c: THREE.Color }[] };
+    const dead: { m: THREE.Matrix4; c: THREE.Color }[] = [], logs: { m: THREE.Matrix4; c: THREE.Color }[] = [];
+    const nrm = new THREE.Vector3();
+    for (let gz = -T.extent; gz <= T.extent; gz += T.step) for (let gx = -T.extent; gx <= T.extent; gx += T.step) {
+      const seed = gx * 1.31 + gz * 2.77, x = gx + (hash1(seed) - 0.5) * T.step * 0.9, z = gz + (hash1(seed + 5) - 0.5) * T.step * 0.9;
+      const r = Math.hypot(x, z);
+      if (r > T.extent || z > coastZ(x) - 6 || Math.hypot(x - W.spawn.x, z - W.spawn.z) < T.clearSpawn) continue;
+      const h = heightAt(x, z);
+      if (h < W.waterY + 0.7 || streamDist(x, z) < 1.5 || estuaryE(x, z) < 1.25 || normalAt(x, z, nrm).y < 0.8 || isBlocked(x, z, 1.2)) continue;
+      const forest = fbm2(x / 40 + 3, z / 40 - 7, 3) + (x > W.plateau.x0 ? 0.35 : 0) + (z < -80 ? 0.25 : 0) + (r > 125 ? 0.3 : 0);
+      const roll = hash1(seed + 9);
+      const isTree = forest > T.forest ? roll < 0.55 : roll < T.meadow;
+      const isBush = !isTree && roll < (forest > T.forest ? 0.75 : 0.06);
+      if (!isTree && !isBush) continue;
+      const yaw = hash1(seed + 11) * 6.28, s = T.scale[0] + hash1(seed + 13) * (T.scale[1] - T.scale[0]);
+      if (isBush) {
+        crowns.bush.push({ m: mat4(x, h - 0.1, z, yaw, s * (0.8 + hash1(seed) * 0.6)), c: new THREE.Color(pickHex(A.greens.bush, hash1(seed + 17))) });
+        continue;
       }
-      const s = scaleMin + hash(seed + i) * scaleVar;
-      im.setMatrixAt(i, m4.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(yAxis, hash(i + seed) * 6), new THREE.Vector3(s, s * (0.6 + hash(i * 0.7) * 0.8), s)));
+      const kind = hash1(seed + 19) < 0.45 ? 'round' : hash1(seed + 21) < 0.55 ? 'wide' : 'tall';
+      const th = T.trunkHeight[0] + hash1(seed + 23) * (T.trunkHeight[1] - T.trunkHeight[0]);
+      trunks.push({ m: mat4(x, h - 0.2, z, yaw, s, (th + (kind === 'tall' ? 1.5 : 0.8)) * s, s), c: new THREE.Color(NATURE.bark).multiplyScalar(0.9 + hash1(seed) * 0.2) });
+      crowns[kind].push({ m: mat4(x, h - 0.2, z, yaw, s), c: new THREE.Color(pickHex(A.greens[kind], hash1(seed + 29))).multiplyScalar(0.94 + hash1(seed + 31) * 0.12) });
+      if (r < T.collideR) colliders.push(physics.addStaticCylinder(new THREE.Vector3(x, h + 1.5 * s, z), 1.5 * s, 0.3 * s));
+      block(x, z, 1.2 * s);
     }
-  };
-  scatter(tufts, 17, 0.7, 0.8);
-  scatter(pebbles, 53, 0.4, 0.9);
-  group.add(tufts, pebbles); disposables.push(tufts, pebbles);
-
-  // --- Rope bridge over the chasm (rails are visual only, so the player can fall off).
-  const B = L.bridge;
-  const bLen = B.fromZ - B.toZ;
-  const bc = new THREE.Vector3(0, -B.thickness / 2, (B.fromZ + B.toZ) / 2);
-  const planks = new THREE.InstancedMesh(unitBox, mat.deck, Math.floor(bLen / 0.5));
-  planks.castShadow = planks.receiveShadow = true;
-  for (let i = 0; i < planks.count; i++) {
-    const z = B.fromZ - 0.25 - i * 0.5;
-    planks.setMatrixAt(i, m4.compose(new THREE.Vector3(0, -B.thickness / 2, z), q.setFromAxisAngle(yAxis, (hash(i) - 0.5) * 0.06), new THREE.Vector3(B.halfWidth * 2, B.thickness, 0.44)));
-    planks.setColorAt(i, col.set(0xffffff).multiplyScalar(0.8 + hash(i * 3) * 0.3));
-  }
-  group.add(planks); disposables.push(planks);
-  box(bc, new THREE.Vector3(B.halfWidth, B.thickness / 2, bLen / 2));
-  const ropePostGeo = own(new THREE.CylinderGeometry(0.08, 0.1, 1.2, 6).translate(0, 0.6, 0));
-  const nPosts = 5;
-  const ropePosts = new THREE.InstancedMesh(ropePostGeo, mat.wood, nPosts * 2);
-  ropePosts.castShadow = true;
-  for (let i = 0; i < nPosts; i++) for (const sx of [-1, 1]) {
-    const z = B.fromZ - (i / (nPosts - 1)) * bLen;
-    ropePosts.setMatrixAt(i * 2 + (sx > 0 ? 1 : 0), m4.makeTranslation(sx * (B.halfWidth + 0.05), 0, z));
-  }
-  group.add(ropePosts); disposables.push(ropePosts);
-  const ropeGeo = own(new THREE.CylinderGeometry(0.03, 0.03, bLen, 4).rotateX(Math.PI / 2));
-  for (const sx of [-1, 1]) {
-    const rope = add(ropeGeo, mat.rope, false, false);
-    rope.position.set(sx * (B.halfWidth + 0.05), 1.05, bc.z);
-  }
-
-  // --- Shrine gate on the far ledge (posts collide, beams decorative).
-  const gz = (L.ledge.minZ + L.ledge.maxZ) / 2 - 2;
-  const gatePost = own(new THREE.CylinderGeometry(0.28, 0.32, 5, 8).translate(0, 2.5, 0));
-  for (const sx of [-1, 1]) {
-    add(gatePost, mat.torii).position.set(sx * 2.6, 0, gz);
-    cyl(new THREE.Vector3(sx * 2.6, 2.5, gz), 2.5, 0.3);
-  }
-  const beam = add(unitBox, mat.torii); beam.position.set(0, 4.6, gz); beam.scale.set(7.4, 0.35, 0.5);
-  const beam2 = add(unitBox, mat.torii); beam2.position.set(0, 3.7, gz); beam2.scale.set(6, 0.25, 0.35);
-  const top = add(unitBox, mat.timber); top.position.set(0, 5.0, gz); top.scale.set(8.2, 0.3, 0.8);
-
-  // --- Stone lanterns (small colliders, kept off the path and the bridge) with a warm glowing fire box.
-  for (const [x, z] of L.stoneLanterns) {
-    deco.frame(x, 0, z, 0)
-      .put(kit.box, C.stone, 0, 0, 0, 0.9, 0.3, 0.9)
-      .put(kit.cylLow, C.stone, 0, 0.3, 0, 0.22, 0.8, 0.22)
-      .put(kit.box, C.stone, 0, 1.1, 0, 0.7, 0.15, 0.7)
-      .put(kit.box, C.stone, 0, 1.25, 0, 0.55, 0.45, 0.55)
-      .put(kit.hip, C.stone, 0, 1.68, 0, 1.15, 0.5, 1.15)
-      .put(kit.ball, C.stone, 0, 2.25, 0, 0.14, 0.14, 0.14);
-    glow.frame(x, 0, z, 0).put(kit.box, C.lantern, 0, 1.33, 0, 0.58, 0.28, 0.4).put(kit.box, C.lantern, 0, 1.33, 0, 0.4, 0.28, 0.58);
-    cyl(new THREE.Vector3(x, 1.1, z), 1.1, L.stoneLanternRadius);
-  }
-
-  // --- Paper-lantern strings between tall poles along the cliffs (poles collide, lanterns/wires decorative).
-  const wirePts: number[] = [];
-  const poleRuns = [L.lanternPoles.slice(0, 4), L.lanternPoles.slice(4)];
-  for (const run of poleRuns) run.forEach(([x, z], k) => {
-    const H = L.lanternPoleHeight;
-    deco.frame(x, 0, z, 0).put(kit.cylLow, C.timber, 0, 0, 0, L.lanternPoleRadius, H, L.lanternPoleRadius).put(kit.box, C.timber, 0, H - 0.5, 0, 0.9, 0.14, 0.14, x === run[0][0] ? 0 : Math.PI / 2);
-    cyl(new THREE.Vector3(x, H / 2, z), H / 2, L.lanternPoleRadius);
-    if (k === run.length - 1) return;
-    const [x1, z1] = run[k + 1], n = L.lanternsPerString, y0 = H - 0.4;
-    const at = (t: number) => [x + (x1 - x) * t, y0 - 4 * t * (1 - t) * L.lanternSag, z + (z1 - z) * t];
-    for (let s = 0; s < 12; s++) wirePts.push(...at(s / 12), ...at((s + 1) / 12));
-    glow.frame(0, 0, 0);
-    for (let j = 1; j <= n; j++) {
-      const [lx, ly, lz] = at(j / (n + 1));
-      glow.put(kit.ball, j % 2 ? C.lantern : C.lantern2, lx, ly - 0.45, lz, 0.28, 0.38, 0.28);
-      wirePts.push(lx, ly, lz, lx, ly - 0.2, lz);
+    // Dead trees on a few islets.
+    W.islets.forEach(([x, z, rad], i) => {
+      if (i % 3 !== 1) return;
+      const px = x + rad * 0.3, pz = z - rad * 0.2, y = heightAt(px, pz) - 0.1;
+      dead.push({ m: mat4(px, y, pz, i * 1.7, 1 + hash1(i) * 0.4), c: new THREE.Color(NATURE.deadWood) });
+      colliders.push(physics.addStaticCylinder(new THREE.Vector3(px, y + 2, pz), 2, 0.25));
+    });
+    // Driftwood on the beach.
+    for (let i = 0; i < A.driftwood; i++) {
+      const x = -60 + hash1(i * 3.7) * 120, z = coastZ(x) - 1 - hash1(i * 5.3) * 6;
+      if (estuaryE(x, z) < 1.1 || isBlocked(x, z, 0)) continue;
+      logs.push({ m: mat4(x, heightAt(x, z) + 0.12, z, hash1(i) * 6.28, 2 + hash1(i * 7) * 2.5, 1, 1), c: new THREE.Color(NATURE.driftwood).multiplyScalar(0.92 + hash1(i * 9) * 0.12) });
     }
-  });
-  const wires = new THREE.LineSegments(
-    own(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(wirePts, 3))),
-    own(new THREE.LineBasicMaterial({ color: C.wire })),
-  );
-  group.add(wires);
-  for (const im of deco.build(mat.white, true, true)) { group.add(im); own(im); }
+    instanced(G.trunk, mat.plain, trunks);
+    instanced(G.round, mat.vc, crowns.round);
+    instanced(G.wide, mat.vc, crowns.wide);
+    instanced(G.tall, mat.vc, crowns.tall);
+    instanced(G.bush, mat.vc, crowns.bush);
+    instanced(G.dead, mat.plain, dead);
+    instanced(G.log, mat.plain, logs);
+
+    // Tall grass tufts tinted from the ground and white/yellow flower dots in patches.
+    const tufts: { m: THREE.Matrix4; c: THREE.Color }[] = [], flowers: { m: THREE.Matrix4; c: THREE.Color }[] = [];
+    const E = A.grassExtent;
+    for (let i = 0; tufts.length < A.tufts && i < A.tufts * 4; i++) {
+      const x = (hash1(i * 1.37) * 2 - 1) * E, z = (hash1(i * 2.71 + 5) * 2 - 1) * E;
+      const h = heightAt(x, z);
+      if (h < W.waterY + 0.7 || h > 25 || z > coastZ(x) - 7 || normalAt(x, z, nrm).y < 0.85 || isBlocked(x, z, 0.3)) continue;
+      terrainColor(x, z, h, nrm.y, col);
+      const s = 0.7 + hash1(i * 3.3) * 0.9;
+      tufts.push({ m: mat4(x, h - 0.05, z, hash1(i) * 6.28, s, s * (0.8 + hash1(i * 4.1) * 0.6), s), c: col.clone().multiplyScalar(1.08) });
+    }
+    for (let i = 0; flowers.length < A.flowers && i < A.flowers * 8; i++) {
+      const x = (hash1(i * 4.13 + 1) * 2 - 1) * E, z = (hash1(i * 3.07 + 9) * 2 - 1) * E;
+      if (noise2(x / 12 + 70, z / 12) < 0.15) continue;
+      const h = heightAt(x, z);
+      if (h < W.waterY + 0.6 || h > 25 || z > coastZ(x) - 7 || isBlocked(x, z, 0.2)) continue;
+      flowers.push({ m: mat4(x, h, z, 0, 0.8 + hash1(i) * 0.5), c: new THREE.Color(pickHex(A.flowerColors, hash1(i * 7.7))) });
+    }
+    instanced(G.tuft, mat.flat, tufts, false, true);
+    instanced(G.flower, mat.flat, flowers, false, false);
+  }
+  for (const im of solid.build(mat.plain, true, true)) { group.add(im); own(im); }
   for (const im of glow.build(own(glowMaterial(0xffffff, 2.4)))) { group.add(im); own(im); }
 
-  // --- Village hills, distant mountains and sky.
-  buildVillage(group, own, kit);
-  const sunDir = new THREE.Vector3(...L.sunDir);
-  buildSky(group, sunDir, own);
+  // ---- Invisible boundary ring (not climbable) so nobody leaves the valley over the hills or across the sea.
+  {
+    const Bd = W.boundary, n = Bd.segments, half = Math.PI * Bd.radius / n * 1.15;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2, r = Bd.radius + 2;
+      colliders.push(physics.addStaticBox(new THREE.Vector3(Math.cos(a) * r, 50, Math.sin(a) * r), new THREE.Vector3(half, 150, 2), -Math.PI / 2 - a));
+    }
+  }
 
+  // ---- Sky, fog, lights. The single shadow-casting sun follows the player (see update).
+  buildSky(group, skySun, own);
   const prevFog = scene.fog, prevBg = scene.background;
-  scene.fog = new THREE.Fog(SKY.horizon, L.fogNear, L.fogFar);
-  scene.background = new THREE.Color(SKY.horizon);
-
-  const hemi = new THREE.HemisphereLight(L.hemiSky, L.hemiGround, L.hemiIntensity);
-  const sun = new THREE.DirectionalLight(L.sunColor, L.sunIntensity);
-  sun.position.set(...L.sunDir);
-  sun.target.position.set(0, 0, 0);
+  scene.fog = new THREE.Fog(A.fogColor, A.fogNear, A.fogFar);
+  scene.background = new THREE.Color(A.fogColor);
+  const lightDir = new THREE.Vector3(...A.lightDir).normalize();
+  const hemi = new THREE.HemisphereLight(A.hemiSky, A.hemiGround, A.hemiIntensity);
+  const sun = new THREE.DirectionalLight(A.sunColor, A.sunIntensity);
   sun.castShadow = true;
   const sc = sun.shadow.camera;
-  sc.left = sc.bottom = -L.shadowExtent; sc.right = sc.top = L.shadowExtent;
-  sc.near = 1; sc.far = 140;
-  sun.shadow.mapSize.set(L.shadowMapSize, L.shadowMapSize);
+  sc.left = sc.bottom = -A.shadowExtent; sc.right = sc.top = A.shadowExtent;
+  sc.near = 1; sc.far = A.shadowDistance * 2;
+  sun.shadow.mapSize.set(A.shadowMapSize, A.shadowMapSize);
   sun.shadow.bias = -0.0005;
-  sun.shadow.normalBias = 0.04;
+  sun.shadow.normalBias = 0.05;
   group.add(hemi, sun, sun.target);
 
+  // Light-space basis for texel snapping (stops shadow shimmer while the frustum follows the player).
+  const lightRot = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(lightDir, new THREE.Vector3(), yAxis));
+  const lightRotInv = lightRot.clone().invert();
+  const texel = (A.shadowExtent * 2) / A.shadowMapSize;
+  const update = (focus: THREE.Vector3) => {
+    v3.copy(focus).applyQuaternion(lightRotInv);
+    v3.x = Math.round(v3.x / texel) * texel; v3.y = Math.round(v3.y / texel) * texel;
+    v3.applyQuaternion(lightRot);
+    sun.target.position.copy(v3);
+    sun.position.copy(v3).addScaledVector(lightDir, A.shadowDistance);
+  };
+  const playerSpawn = new THREE.Vector3(W.spawn.x, heightAt(W.spawn.x, W.spawn.z) + 0.1, W.spawn.z);
+  update(playerSpawn);
+
   return {
-    playerSpawn: new THREE.Vector3(...L.playerSpawn),
-    enemySpawns: L.enemySpawns.map(([x, z]) => new THREE.Vector3(x, 0.1, z)),
+    playerSpawn,
+    enemySpawns,
+    update,
     dispose() {
       disposables.forEach((d) => d.dispose());
       sun.shadow.map?.dispose();
       for (const c of colliders) {
         physics.climbable.delete(c.handle);
+        physics.water.delete(c.handle);
         physics.world.removeCollider(c, false);
       }
       group.removeFromParent();

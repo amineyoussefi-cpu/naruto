@@ -17,6 +17,8 @@ const FX = {
   puffGrow: 0.18,
   // colours
   hitColor: 0xffd27a, blockColor: 0x7fd4ff, killColor: 0xff6a3a, chakraColor: 0x4fb8ff, chakraCore: 0xe6f8ff,
+  /** Water-walking footstep ripple and splash. */
+  waterRipple: 0xbfeaff, waterSplash: 0xe6f8ff,
   dustColor: 0xe6cf9f, smokeColor: 0xffffff, telegraphColor: 0xff3b1f, windColor: 0xeaf6ff,
   // impact billboards: sizes (m), lifetimes (s), HDR intensity
   starSize: 0.9, starHeavySize: 1.6, starKillSize: 2.1, starLife: 0.18, starHeavyLife: 0.26, starGlow: 1.15,
@@ -317,6 +319,14 @@ export class Effects {
         if (e.impact > 12) this.ring(p, FX.dustColor, 0.3, 2.2, 0.35, 0.5, null, 1);
       }),
       on('footstep', (e) => {
+        const a = this.getActor(e.id);
+        if (a?.onWater) {
+          // Water-walking: a chakra ripple under each step instead of dust.
+          const w = tmpV.set(a.position.x, a.position.y + 0.04, a.position.z);
+          this.ring(w, FX.waterRipple, 0.25, e.sprint ? 1.8 : 1.3, 0.55, 0.7, null, 1);
+          if (e.sprint) this.spark(w, FX.waterSplash, 5, 2.5, 0.3);
+          return;
+        }
         if (!e.sprint) return;
         const p = this.feet(e.id);
         if (p) this.emit(this.dust, p.setY(p.y + 0.05), FX.dustColor, 3, 1.2, 0.4, FX.dustSize * 0.8, 0.3, 0.3);
@@ -375,6 +385,12 @@ export class Effects {
         if (!p) return;
         this.poof(p.setY(p.y + 0.8), 26, 2.2, 0.8, FX.dustSize * 1.8, 1.2);
         this.ring(p.setY(p.y - 0.8), 0xffffff, 0.3, 2.5, 0.4, 0.6, null, 1.2);
+      }),
+      on('speedBoost', (e) => {
+        const p = this.feet(e.id);
+        if (!p) return;
+        this.ring(p.setY(p.y + 0.05), FX.chakraColor, 0.3, 2.2, 0.3, 0.8);
+        this.spark(p.setY(p.y + 0.4), FX.chakraColor, 14, 5, 0.35);
       }),
       on('chakraDash', (e) => {
         const a = this.getActor(e.id);
