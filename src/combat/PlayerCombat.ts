@@ -20,6 +20,9 @@ export class PlayerCombat {
   private comboIndex = 0;
   private comboTimer = 0;
   private attackBuffer = 0;
+  /** Special/kunai presses made during another move fire when it ends (or cancel combo recovery). */
+  private specialBuffer = 0;
+  private kunaiBuffer = 0;
   private concentrating = false;
   /** Concentration state of the previous step (for the one-shot start event). */
   private prevConcentrating = false;
@@ -45,6 +48,8 @@ export class PlayerCombat {
     this.concentrating = false;
     if (this.ctx.pressed.has('attack')) this.attackBuffer = COMBAT.inputBuffer;
     else this.attackBuffer = Math.max(0, this.attackBuffer - dt);
+    this.specialBuffer = this.ctx.pressed.has('special') ? COMBAT.inputBuffer : Math.max(0, this.specialBuffer - dt);
+    this.kunaiBuffer = this.ctx.pressed.has('kunai') ? COMBAT.inputBuffer : Math.max(0, this.kunaiBuffer - dt);
 
     if (!a.alive || f.stunned) {
       this.cancel();
@@ -68,7 +73,8 @@ export class PlayerCombat {
     if (this.move === 'attack') {
       const hit = COMBAT.combo[this.comboIndex];
       const inRecovery = this.t >= hit.windup + hit.active;
-      if (inRecovery && this.ctx.pressed.has('dodge') && f.cooldownReady('dodge')) {
+      const wantsTechnique = this.specialBuffer > 0 || (this.kunaiBuffer > 0 && f.cooldownReady('kunai'));
+      if (inRecovery && ((this.ctx.pressed.has('dodge') && f.cooldownReady('dodge')) || wantsTechnique)) {
         this.endMove();
         this.comboIndex = 0;
       }
@@ -88,7 +94,7 @@ export class PlayerCombat {
     this.fired = false;
     this.comboIndex = 0;
     this.comboTimer = 0;
-    this.attackBuffer = 0;
+    this.attackBuffer = this.specialBuffer = this.kunaiBuffer = 0;
     this.concentrating = false;
     this.concentrateLocked = false;
     this.setVisuals(false, false, false);
@@ -97,7 +103,8 @@ export class PlayerCombat {
   private startFromInput(): void {
     const a = this.actor, f = a.fighter, pressed = this.ctx.pressed, input = this.ctx.input;
     if (pressed.has('dodge') && f.cooldownReady('dodge')) return this.startDodge();
-    if (pressed.has('special')) {
+    if (this.specialBuffer > 0) {
+      this.specialBuffer = 0;
       if (!f.cooldownReady('special')) return;
       if (!f.trySpendChakra(COMBAT.special.chakraCost)) {
         this.ctx.events.emit('chakraFail', { id: a.id, action: 'special' });
@@ -109,7 +116,8 @@ export class PlayerCombat {
       this.ctx.events.emit('attackStart', { id: a.id, kind: 'special', position: this.pos() });
       return;
     }
-    if (pressed.has('kunai') && f.cooldownReady('kunai')) {
+    if (this.kunaiBuffer > 0 && f.cooldownReady('kunai')) {
+      this.kunaiBuffer = 0;
       f.startCooldown('kunai', COMBAT.kunai.cooldown);
       this.begin('throw', 'throw');
       this.ctx.events.emit('attackStart', { id: a.id, kind: 'kunai', position: this.pos() });

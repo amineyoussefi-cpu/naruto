@@ -49,6 +49,17 @@ describe('PlayerCombat', () => {
     expect(kinds).toEqual(['combo1', 'combo2', 'combo3']);
   });
 
+  it('a special pressed mid-combo is buffered and fires instead of being dropped', () => {
+    const { p, events, step } = setup();
+    const kinds: string[] = [];
+    events.on('attackStart', (e) => kinds.push(e.kind));
+    step(['attack']);
+    step(['special']); // during hit 1 windup
+    for (let i = 0; i < 40; i++) step();
+    expect(kinds).toEqual(['combo1', 'special']);
+    expect(p.fighter.chakra).toBeLessThan(100);
+  });
+
   it('special without enough chakra emits chakraFail and does nothing', () => {
     const { p, pc, events, step } = setup();
     let fails = 0;

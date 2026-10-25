@@ -43,7 +43,7 @@ export class UI {
     this.game.applySettings(settings);
     this.fillSettingsForm(settings);
 
-    const click = (id: string, fn: () => void) => this.el[id].addEventListener('click', fn);
+    const click = (id: string, fn: () => void) => this.el[id].addEventListener('click', () => { this.game.uiClick(); fn(); });
     click('btn-play', () => this.openOverlay('controls', true));
     click('btn-controls', () => this.openOverlay('controls', true));
     click('btn-settings-main', () => this.openOverlay('settings', true));

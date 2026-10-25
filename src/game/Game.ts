@@ -45,6 +45,8 @@ export interface GameApi {
   getHudData(): HudData;
   /** Unlock audio and capture the mouse; call from a user gesture. */
   userGesture(): void;
+  /** Menu button feedback sound (also unlocks audio). */
+  uiClick(): void;
 }
 
 /**
@@ -205,6 +207,11 @@ export class Game implements GameApi {
   userGesture(): void {
     this.audio.unlock();
     this.input.requestPointerLock();
+  }
+
+  uiClick(): void {
+    this.audio.unlock();
+    this.audio.playUiClick();
   }
 
   start(): void {
