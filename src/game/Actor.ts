@@ -19,6 +19,8 @@ export interface ActorControl {
   animLocked: boolean;
   /** Jumping / climbing allowed. */
   allowJump: boolean;
+  /** Collide with the world only this step (pass through other ninjas, e.g. Chidori). */
+  passThroughActors: boolean;
 }
 
 let nextId = 1;
@@ -62,7 +64,7 @@ export class Actor {
   removed = false;
   /** Seconds since death. */
   deadTime = 0;
-  readonly control: ActorControl = { allowMove: true, moveFactor: 1, forcedVelocity: null, animLocked: false, allowJump: true };
+  readonly control: ActorControl = { allowMove: true, moveFactor: 1, forcedVelocity: null, animLocked: false, allowJump: true, passThroughActors: false };
 
   constructor(
     readonly kind: ActorKind,
@@ -108,6 +110,7 @@ export class Actor {
     c.forcedVelocity = null;
     c.animLocked = false;
     c.allowJump = true;
+    c.passThroughActors = false;
   }
 
   /** Places the model between the previous and current simulation states. */

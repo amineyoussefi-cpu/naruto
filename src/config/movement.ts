@@ -34,19 +34,26 @@ export const MOVEMENT = {
   runStride: 1.6,
   sprintStride: 2.2,
   /** Wall climbing. */
-  climbSpeed: 4,
+  /** Fast, Storm-like wall running: close to sprint speed. */
+  climbSpeed: 14,
   /** Wall-walking is cheap for a ninja: a light, steady drain. */
   climbChakraPerSecond: 2.5,
   climbMinChakra: 5,
   climbProbeDistance: 0.8,
   /** Upward speed of the hop onto the top of a wall (m/s). */
-  climbTopHop: 9,
+  climbTopHop: 7.5,
   /** Forward speed of the hop onto the top of a wall (m/s). */
-  climbTopForward: 4,
+  climbTopForward: 7,
   /** Height above feet of the lower ledge probe ray (m). */
   climbLedgeProbeHeight: 0.25,
   /** Distance per second the climber is pushed into the wall to stay attached (m/s). */
   climbStick: 1,
+  /** Auto-attach: moving into a climbable wall attaches when the input points into it at least this much (cos of angle). */
+  climbAutoDot: 0.55,
+  /** Seconds after leaving a wall before auto-attach may grab a wall again (prevents attach/detach loops). */
+  climbReattachDelay: 0.4,
+  /** Push away from the wall when letting go by moving away from it (m/s). */
+  climbLetGoPush: 4,
   /** Walls steeper than this |normal.y| are not climbable (0 = vertical). */
   climbMaxNormalY: 0.5,
   /** Kick off the wall: horizontal speed away from it (m/s) and fraction of jump velocity upward. */

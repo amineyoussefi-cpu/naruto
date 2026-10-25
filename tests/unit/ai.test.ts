@@ -84,3 +84,36 @@ describe('attack token director', () => {
     expect(peak).toBe(ENEMIES.maxSimultaneousAttackers);
   });
 });
+
+describe('EnemyAI status effects (v4)', () => {
+  it('genjutsu: a disoriented enemy interrupts, never attacks or approaches, then recovers when it expires', () => {
+    const { ctx, hitboxes, projectiles, actors } = makeCtx();
+    const m = makeActor('melee', 0, 1.5); // already in range
+    const r = makeActor('ranged', 0, 11);
+    actors.push(m, r);
+    const ai = new EnemyAI(ctx, never);
+    ai.register(m); ai.register(r);
+    m.disoriented = r.disoriented = 3;
+    let t = 0;
+    run(ai, 2.5, () => { t += DT; m.disoriented = Math.max(0, 3 - t); r.disoriented = m.disoriented; });
+    expect(ai.stateOf(m)).toBe('dazed');
+    expect(m.anim).toBe('dazed');
+    expect(hitboxes.length + projectiles.length).toBe(0);
+    m.disoriented = r.disoriented = 0;
+    run(ai, 3);
+    expect(hitboxes.length).toBeGreaterThan(0); // normal behaviour restored
+  });
+
+  it('a grabbed enemy is fully suspended (no movement, no attack, no state change)', () => {
+    const { ctx, hitboxes, actors } = makeCtx();
+    const e = makeActor('melee', 0, 1.5);
+    actors.push(e);
+    const ai = new EnemyAI(ctx, never);
+    ai.register(e);
+    e.grabbedBy = ctx.player.id;
+    const before = e.position.clone();
+    run(ai, 2);
+    expect(e.position.distanceTo(before)).toBe(0);
+    expect(hitboxes.length).toBe(0);
+  });
+});

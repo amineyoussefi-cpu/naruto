@@ -127,8 +127,9 @@ export class PhysicsWorld {
    * Moves a character capsule by `delta`, sliding along obstacles.
    * Returns the corrected feet position and whether it is grounded.
    */
-  moveCharacter(c: CharacterBody, delta: THREE.Vector3, outFeet: THREE.Vector3): { grounded: boolean; hitCeiling: boolean } {
-    this.controller.computeColliderMovement(c.collider, delta, undefined, undefined, (other) => other.handle !== c.collider.handle);
+  moveCharacter(c: CharacterBody, delta: THREE.Vector3, outFeet: THREE.Vector3, opts: { worldOnly?: boolean } = {}): { grounded: boolean; hitCeiling: boolean } {
+    // worldOnly: pass through other characters (Chidori piercing dash) but never through walls.
+    this.controller.computeColliderMovement(c.collider, delta, undefined, opts.worldOnly ? QUERY_WORLD_ONLY : undefined, (other) => other.handle !== c.collider.handle);
     const m = this.controller.computedMovement();
     const t = c.body.translation();
     const next = { x: t.x + m.x, y: t.y + m.y, z: t.z + m.z };

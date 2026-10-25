@@ -3,6 +3,20 @@ export const CAMERA = {
   fov: 60,
   /** Orbit distance from the pivot (m). */
   distance: 6,
+  /** Dynamic framing: farther + wider while sprinting, closer during combat (combat wins when both apply). */
+  distanceSprint: 8.5,
+  distanceCombat: 4.6,
+  fovSprint: 68,
+  fovCombat: 58,
+  /** Horizontal speed above which the sprint framing applies (m/s). */
+  sprintFramingSpeed: 13,
+  /** An enemy closer than this (m) counts as active combat. */
+  combatRange: 8,
+  /** Seconds the combat framing is kept after the last combat cue (avoids pumping between hits). */
+  combatHold: 1.2,
+  /** Blend rates toward the target distance / FOV (1/s, exponential). */
+  distanceSharpness: 3,
+  fovSharpness: 3,
   /** Closest the camera may be pulled in by walls (m). */
   minDistance: 1.2,
   /** Pivot height above the player's feet (m). */

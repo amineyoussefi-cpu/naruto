@@ -258,7 +258,9 @@ export class Game implements GameApi {
   resume(): void {
     if (this.state !== 'paused') return;
     this.setState('playing');
-    this.userGesture();
+    // During a grab sequence the cursor must stay free for the arrows (locked clicks would hit the canvas).
+    if (this.qteCursor) this.audio.unlock();
+    else this.userGesture();
   }
 
   restart(): void {

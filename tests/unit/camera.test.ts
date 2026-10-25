@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bestTarget, cycleTarget, screenAngle, type LockCandidate } from '../../src/camera/targeting';
+import { cameraFraming } from '../../src/camera/CameraRig';
+import { CAMERA } from '../../src/config/camera';
 
 const view = { x: 0, y: 0, z: 0, yaw: 0 }; // looking toward +Z, screen-right is -X
 const c = (id: number, x: number, z: number, alive = true, visible = true): LockCandidate => ({ id, x, y: 0, z, alive, visible });
@@ -34,5 +36,15 @@ describe('lock-on targeting', () => {
 
   it('excludes the given id when re-acquiring', () => {
     expect(bestTarget(view, [c(1, 0, 5), c(2, 3, 9)], 25, 1)).toBe(2);
+  });
+});
+
+describe('dynamic camera framing', () => {
+  it('pulls back while sprinting, closes in for combat, combat has priority', () => {
+    expect(cameraFraming(5, false)).toEqual({ distance: CAMERA.distance, fov: CAMERA.fov });
+    expect(cameraFraming(20, false)).toEqual({ distance: CAMERA.distanceSprint, fov: CAMERA.fovSprint });
+    expect(cameraFraming(20, true)).toEqual({ distance: CAMERA.distanceCombat, fov: CAMERA.fovCombat });
+    expect(CAMERA.distanceSprint).toBeGreaterThan(CAMERA.distance);
+    expect(CAMERA.distanceCombat).toBeLessThan(CAMERA.distance);
   });
 });

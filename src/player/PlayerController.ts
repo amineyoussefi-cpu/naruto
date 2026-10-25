@@ -27,6 +27,8 @@ export class PlayerController {
   /** Double-tap-forward high-speed run; lasts while forward stays held. */
   private boosting = false;
   private airTime = 0;
+  /** Seconds before auto-attach is allowed again after leaving a wall. */
+  private reattach = 0;
   private airJumpsLeft: number = MOVEMENT.airJumps;
 
   constructor(private readonly ctx: GameContext, private readonly actor: Actor) {}
@@ -45,15 +47,20 @@ export class PlayerController {
 
     if (a.climbing && (!alive || !c.allowJump)) a.climbing = false;
 
+    const wasClimbing = a.climbing;
+    this.reattach = Math.max(0, this.reattach - dt);
     if (a.climbing) {
       this.updateClimb(dt, axes, jumpPressed);
     } else {
-      if (jumpPressed && this.tryStartClimb(axes)) {
+      // Automatic: running into a climbable wall attaches (jump near a wall still works too).
+      const wantsWall = alive && c.allowMove && c.allowJump && (axes.x !== 0 || axes.y !== 0) && this.reattach <= 0;
+      if ((wantsWall || (jumpPressed && this.reattach <= 0)) && this.tryStartClimb(axes, !jumpPressed)) {
         this.updateClimb(dt, axes, false);
       } else {
         this.updateGround(dt, axes, jumpPressed, alive);
       }
     }
+    if (wasClimbing && !a.climbing) this.reattach = MOVEMENT.climbReattachDelay;
 
     this.updateRespawn();
   }
@@ -144,13 +151,16 @@ export class PlayerController {
   // ---------------------------------------------------------------- climbing
 
   /** Probes for a climbable wall in the movement (or facing) direction and attaches to it. */
-  private tryStartClimb(axes: { x: number; y: number }): boolean {
+  private tryStartClimb(axes: { x: number; y: number }, auto = false): boolean {
     const a = this.actor;
     if (axes.x !== 0 || axes.y !== 0) this.cameraWish(axes, this.dir).normalize();
     else a.forward(this.dir);
     const hit = this.probeWall(a.chest(this.origin), this.dir);
     if (!hit) return false;
+    // Auto-attach only when really heading into the wall (not when brushing past it).
+    if (auto && this.dir.dot(hit) > -MOVEMENT.climbAutoDot) return false;
     if (a.fighter.chakra < MOVEMENT.climbMinChakra) {
+      if (auto) return false; // no failure spam while just running along walls
       this.ctx.events.emit('chakraFail', { id: a.id, action: 'climb' });
       return false; // falls through to a normal (buffered) jump
     }
@@ -195,9 +205,17 @@ export class PlayerController {
       return;
     }
 
-    // Up/down from forward/back; sideways along the wall tangent (screen-right when facing −n).
+    // Camera-relative: input into the wall runs up it, along the wall moves sideways, away from it lets go.
     const move = a.control.allowMove ? MOVEMENT.climbSpeed * a.control.moveFactor : 0;
-    const up = axes.y * move, side = axes.x * move;
+    this.cameraWish(axes, this.wish);
+    const into = -this.wish.dot(n);
+    if (into < -MOVEMENT.climbAutoDot) {
+      a.climbing = false;
+      a.velocity.copy(n).multiplyScalar(MOVEMENT.climbLetGoPush);
+      return;
+    }
+    const up = Math.max(0, into) * move;
+    const side = (this.wish.x * n.z - this.wish.z * n.x) * move;
     a.velocity.set(n.z * side, up, -n.x * side);
     this.delta.copy(a.velocity).addScaledVector(n, -MOVEMENT.climbStick).multiplyScalar(dt);
     const r = this.ctx.physics.moveCharacter(a.body, this.delta, a.position);

@@ -47,6 +47,8 @@ export const ENEMIES = {
   evadeTime: 0.4, evadeSpeedFactor: 1.6,
   /** Melee enemies within this distance may react to a player attack start. */
   dodgeReactRange: 4,
+  /** Genjutsu daze: wander speed fraction and seconds between random direction changes. */
+  dazedSpeedFactor: 0.25, dazedTurnTime: 1.2,
   /** Max time spent retreating in `reposition` before re-evaluating. */
   repositionMaxTime: 1.5,
 } as const;

@@ -1,3 +1,4 @@
+import type { AnimState } from '../core/types';
 import * as THREE from 'three';
 import { CAMERA } from '../config/camera';
 import type { Actor } from '../game/Actor';
@@ -83,6 +84,8 @@ export class CameraRig {
       if (!ctx.input.enabled && dx === 0 && dy === 0) this.yaw = wrap(this.yaw + CAMERA.menuOrbitSpeed * frameDt);
     }
 
+    this.updateFraming(frameDt);
+
     // Follow the interpolated model.
     this.tmp.set(p.x, p.y + CAMERA.height, p.z);
     if (this.snap) { this.pivot.copy(this.tmp); this.snap = false; }
@@ -92,7 +95,7 @@ export class CameraRig {
     const cp = Math.cos(this.pitch);
     this.right.set(-Math.cos(this.yaw), 0, Math.sin(this.yaw));
     this.dir.set(-Math.sin(this.yaw) * cp, Math.sin(this.pitch), -Math.cos(this.yaw) * cp)
-      .multiplyScalar(CAMERA.distance)
+      .multiplyScalar(this.orbitDistance)
       .addScaledVector(this.right, CAMERA.shoulderOffset);
     const len = this.dir.length();
     this.dir.divideScalar(len);
@@ -117,6 +120,22 @@ export class CameraRig {
     }
   }
 
+  /** Current blended orbit distance (m) and its combat timer; see `cameraFraming`. */
+  private orbitDistance: number = CAMERA.distance;
+  private combatTimer = 0;
+
+  private updateFraming(frameDt: number): void {
+    const p = this.ctx.player;
+    const speed = Math.hypot(p.velocity.x, p.velocity.z);
+    const r2 = CAMERA.combatRange ** 2;
+    const cue = this.lockTarget !== null || COMBAT_ANIMS.has(p.anim) || this.ctx.actors.some((e) => e.team === 'enemy' && e.alive && !e.removed && e.position.distanceToSquared(p.position) < r2);
+    this.combatTimer = cue ? CAMERA.combatHold : Math.max(0, this.combatTimer - frameDt);
+    const f = cameraFraming(speed, this.combatTimer > 0);
+    this.orbitDistance += (f.distance - this.orbitDistance) * ease(CAMERA.distanceSharpness, frameDt);
+    const fov = this.camera.fov + (f.fov - this.camera.fov) * ease(CAMERA.fovSharpness, frameDt);
+    if (Math.abs(fov - this.camera.fov) > 1e-3) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
+  }
+
   shake(intensity: number, duration: number): void {
     if (duration <= 0) return;
     const current = this.shakeTime > 0 ? this.shakeIntensity * (this.shakeTime / this.shakeDuration) ** 2 : 0;
@@ -135,6 +154,8 @@ export class CameraRig {
     this.pitch = CAMERA.defaultPitch;
     this.snap = true;
     this.zoom = 1;
+    this.orbitDistance = CAMERA.distance;
+    this.combatTimer = 0;
     this.shakeTime = 0;
   }
 
@@ -179,4 +200,15 @@ export class CameraRig {
       return { id: a.id, x: a.position.x, y: a.position.y, z: a.position.z, alive: a.alive, visible };
     });
   }
+}
+
+/** Player states that count as fighting for the camera. */
+const COMBAT_ANIMS = new Set<AnimState>(['attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'special', 'throw', 'charge', 'chidori', 'sharingan',
+  'grabHold', 'strikeUp', 'strikeDown', 'strikeLeft', 'strikeRight', 'grabFinisher', 'hit', 'guard']);
+
+/** Target camera distance / FOV: combat framing has priority over sprint framing. */
+export function cameraFraming(speed: number, inCombat: boolean): { distance: number; fov: number } {
+  if (inCombat) return { distance: CAMERA.distanceCombat, fov: CAMERA.fovCombat };
+  if (speed > CAMERA.sprintFramingSpeed) return { distance: CAMERA.distanceSprint, fov: CAMERA.fovSprint };
+  return { distance: CAMERA.distance, fov: CAMERA.fov };
 }

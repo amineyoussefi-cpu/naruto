@@ -47,7 +47,7 @@ export function stepCharacter(
   actor.knockback.multiplyScalar(Math.max(0, 1 - MOVEMENT.knockbackDecay * dt));
   const wasGrounded = actor.grounded;
   const fallSpeed = -v.y;
-  const r = physics.moveCharacter(actor.body, tmp, actor.position);
+  const r = physics.moveCharacter(actor.body, tmp, actor.position, { worldOnly: actor.control.passThroughActors });
   actor.grounded = r.grounded && v.y <= 0;
   if (actor.grounded) v.y = 0;
   if (r.hitCeiling && v.y > 0) v.y = 0;

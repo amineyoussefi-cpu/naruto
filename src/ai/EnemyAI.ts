@@ -5,7 +5,9 @@ import type { Actor } from '../game/Actor';
 import type { GameContext } from '../game/context';
 import { stepCharacter } from '../physics/locomotion';
 
-export type EnemyState = 'idle' | 'detect' | 'chase' | 'attack' | 'recover' | 'hurt' | 'dead' | 'reposition';
+export type EnemyState = 'idle' | 'detect' | 'chase' | 'attack' | 'recover' | 'hurt' | 'dead' | 'reposition'
+  /** Genjutsu (Sharingan): stumbling aimlessly, cannot target the player. */
+  | 'dazed';
 
 interface Brain {
   actor: Actor;
@@ -79,6 +81,11 @@ export class EnemyAI {
     this.playerAttacked = false;
     for (const b of this.brains.values()) {
       if (b.actor.removed) continue;
+      if (b.actor.grabbedBy !== null) {
+        // Held in a grab: combat positions and animates it; the brain is fully suspended.
+        if (b.state === 'attack') this.setState(b, 'recover');
+        continue;
+      }
       b.t += dt;
       b.cooldown = Math.max(0, b.cooldown - dt);
       wish.set(0, 0, 0);
@@ -118,6 +125,12 @@ export class EnemyAI {
       if (b.state !== 'hurt') this.setState(b, 'hurt');
       return;
     }
+    if (a.disoriented > 0) {
+      if (b.state !== 'dazed') { this.setState(b, 'dazed'); b.side = this.rng() < 0.5 ? -1 : 1; }
+      this.dazed(b);
+      return;
+    }
+    if (b.state === 'dazed') this.setState(b, 'chase'); // illusion over: back to normal behaviour
     if (b.state === 'hurt') {
       this.setState(b, 'chase');
       if (this.rng() < ENEMIES.melee.dodgeChance && a.kind === 'melee') this.evade(b, true);
@@ -279,6 +292,21 @@ export class EnemyAI {
       owner: a, kind: 'enemyRanged', origin: origin.clone(), direction: dir.clone(), speed: r.projectileSpeed,
       damage, radius: r.projectileRadius, maxRange: r.projectileMaxRange, knockback: r.knockback, visual: 'shuriken',
     });
+  }
+
+  /** Genjutsu wander: slow stumbling in a drifting direction, no targeting, no attacks. */
+  private dazed(b: Brain): void {
+    const a = b.actor;
+    if (b.t >= ENEMIES.dazedTurnTime * (0.6 + 0.8 * this.rng()) || b.evadeDir.lengthSq() < 0.5) {
+      const ang = this.rng() * Math.PI * 2;
+      b.evadeDir.set(Math.cos(ang), 0, Math.sin(ang));
+      b.t = 0;
+    }
+    const cfg = a.kind === 'ranged' ? ENEMIES.ranged : ENEMIES.melee;
+    wish.copy(b.evadeDir).multiplyScalar(cfg.speed * ENEMIES.dazedSpeedFactor);
+    const d = Math.atan2(b.evadeDir.x, b.evadeDir.z) - a.yaw;
+    a.yaw += Math.atan2(Math.sin(d), Math.cos(d)) * 0.05;
+    this.anim(b, 'dazed');
   }
 
   /** Back off (or side-step) for a short time. */
