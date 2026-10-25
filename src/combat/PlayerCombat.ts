@@ -1,15 +1,16 @@
 import * as THREE from 'three';
 import { COMBAT } from '../config/combat';
-import type { AttackKind } from '../core/types';
+import type { AnimState, AttackKind } from '../core/types';
 import type { Actor } from '../game/Actor';
 import type { GameContext } from '../game/context';
 
-export type Move = 'none' | 'attack' | 'throw' | 'special' | 'dodge';
-const COMBO_KINDS: AttackKind[] = ['combo1', 'combo2', 'combo3'];
-const COMBO_ANIMS = ['attack1', 'attack2', 'attack3'] as const;
+export type Move = 'none' | 'attack' | 'throw' | 'special' | 'dodge' | 'dash' | 'substitution';
+const COMBO_KINDS: AttackKind[] = ['combo1', 'combo2', 'combo3', 'combo4', 'combo5'];
+const COMBO_ANIMS: AnimState[] = ['attack1', 'attack2', 'attack3', 'attack4', 'attack5'];
 
 /**
- * Turns player input into combat actions: combo, kunai, special, guard, dodge, concentrate.
+ * Turns player input into combat actions: homing 5-hit combo, chakra dash, substitution, kunai, special,
+ * guard, dodge, concentrate.
  * Runs before PlayerController each step and writes actor.control. Owner: combat agent.
  */
 export class PlayerCombat {
@@ -29,6 +30,10 @@ export class PlayerCombat {
   /** Set when concentration is interrupted by a hit; cleared once the key is released. */
   private concentrateLocked = false;
   private visuals = { guard: false, aura: false, orb: false };
+  /** Homing target of the current combo hit / chakra dash (null = straight lunge / burst). */
+  private target: Actor | null = null;
+  /** Seconds spent closing in on the homing target before the windup clock starts. */
+  private approach = 0;
   private readonly forced = new THREE.Vector3();
   private readonly tmp = new THREE.Vector3();
 
@@ -51,12 +56,13 @@ export class PlayerCombat {
     this.specialBuffer = this.ctx.pressed.has('special') ? COMBAT.inputBuffer : Math.max(0, this.specialBuffer - dt);
     this.kunaiBuffer = this.ctx.pressed.has('kunai') ? COMBAT.inputBuffer : Math.max(0, this.kunaiBuffer - dt);
 
+    if (a.alive && f.stunned && this.ctx.pressed.has('dodge')) this.trySubstitution();
     if (!a.alive || f.stunned) {
       this.cancel();
       c.allowMove = c.allowJump = false;
       c.animLocked = true;
       if (!a.alive) a.setAnim('dead');
-      else if (a.anim !== 'hit') a.setAnim('hit', true);
+      else if (a.anim !== 'hit' && a.anim !== 'launched') a.setAnim('hit', true);
       return;
     }
     if (a.climbing) {
@@ -74,7 +80,8 @@ export class PlayerCombat {
       const hit = COMBAT.combo[this.comboIndex];
       const inRecovery = this.t >= hit.windup + hit.active;
       const wantsTechnique = this.specialBuffer > 0 || (this.kunaiBuffer > 0 && f.cooldownReady('kunai'));
-      if (inRecovery && ((this.ctx.pressed.has('dodge') && f.cooldownReady('dodge')) || wantsTechnique)) {
+      const wantsDash = this.ctx.pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range) !== null;
+      if (inRecovery && ((this.ctx.pressed.has('dodge') && f.cooldownReady('dodge')) || wantsTechnique || wantsDash)) {
         this.endMove();
         this.comboIndex = 0;
       }
@@ -82,8 +89,10 @@ export class PlayerCombat {
         this.startAttack(this.comboIndex + 1);
       }
     }
+    // Dash-cancel: attacking during a chakra dash starts the combo right away.
+    if (this.move === 'dash' && this.attackBuffer > 0) this.endMove();
     if (this.move === 'none') this.startFromInput();
-    this.runMove();
+    this.runMove(dt);
     this.setVisuals(f.guarding, f.concentrating, this.move === 'special');
   }
 
@@ -95,6 +104,8 @@ export class PlayerCombat {
     this.comboIndex = 0;
     this.comboTimer = 0;
     this.attackBuffer = this.specialBuffer = this.kunaiBuffer = 0;
+    this.target = null;
+    this.approach = 0;
     this.concentrating = false;
     this.concentrateLocked = false;
     this.setVisuals(false, false, false);
@@ -103,6 +114,8 @@ export class PlayerCombat {
   private startFromInput(): void {
     const a = this.actor, f = a.fighter, pressed = this.ctx.pressed, input = this.ctx.input;
     if (pressed.has('dodge') && f.cooldownReady('dodge')) return this.startDodge();
+    // Shift only chakra-dashes when there is someone to rush at; otherwise it is a free sprint (movement).
+    if (pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range)) return this.startDash();
     if (this.specialBuffer > 0) {
       this.specialBuffer = 0;
       if (!f.cooldownReady('special')) return;
@@ -142,20 +155,28 @@ export class PlayerCombat {
     }
   }
 
-  private runMove(): void {
+  private runMove(dt: number): void {
     const a = this.actor, c = a.control;
     if (this.move === 'none') return;
     c.allowMove = c.allowJump = false;
     c.animLocked = true;
     const fwd = a.forward(this.tmp);
     if (this.move === 'attack') {
-      const hit = COMBAT.combo[this.comboIndex];
-      if (this.t < hit.windup + hit.active) c.forcedVelocity = this.forced.copy(fwd).multiplyScalar(hit.lunge);
+      const hit = COMBAT.combo[this.comboIndex], h = COMBAT.homing;
+      const target = this.target && this.target.alive && !this.target.removed ? this.target : null;
+      if (target && this.t < hit.windup + hit.active) {
+        const gap = this.pullToward(target, h.stopDistance, h.speed, dt);
+        // Far target: close in first (bounded), the windup clock starts once in range.
+        if (gap > 0.05 && !this.fired && this.approach < h.maxApproach) {
+          this.approach += dt;
+          this.t = 0;
+        }
+      } else if (this.t < hit.windup + hit.active) c.forcedVelocity = this.forced.copy(fwd).multiplyScalar(hit.lunge);
       if (!this.fired && this.t >= hit.windup) {
         this.fired = true;
         this.ctx.combat.spawnHitbox({
           owner: a, kind: COMBO_KINDS[this.comboIndex], forwardOffset: hit.range, heightOffset: COMBAT.hitboxHeight,
-          radius: hit.radius, duration: hit.active, damage: hit.damage, knockback: hit.knockback,
+          radius: hit.radius, duration: hit.active, damage: hit.damage, knockback: hit.knockback, launch: hit.launch, stun: hit.stun,
         });
       }
       if (this.t >= hit.windup + hit.active + hit.recovery) {
@@ -191,6 +212,20 @@ export class PlayerCombat {
     } else if (this.move === 'dodge') {
       c.forcedVelocity = this.forced;
       if (this.t >= COMBAT.dodge.duration) this.endMove();
+    } else if (this.move === 'dash') {
+      const d = COMBAT.chakraDash;
+      a.velocity.y = 0; // air dash: no gravity build-up
+      const target = this.target && this.target.alive && !this.target.removed ? this.target : null;
+      if (target) {
+        const gap = this.pullToward(target, d.stopDistance, d.speed, dt);
+        if (gap <= 0.05 || this.t >= d.maxDuration) this.endMove();
+      } else {
+        c.forcedVelocity = this.forced;
+        if (this.t >= d.burstTime) this.endMove();
+      }
+    } else if (this.move === 'substitution') {
+      c.forcedVelocity = this.forced.set(0, 0, 0);
+      if (this.t >= COMBAT.substitution.animTime) this.endMove();
     }
   }
 
@@ -198,23 +233,117 @@ export class PlayerCombat {
     this.comboIndex = index;
     this.begin('attack', COMBO_ANIMS[index]);
     this.attackBuffer = 0;
-    this.faceTarget();
+    this.approach = 0;
+    this.target = this.findTarget(COMBAT.homing.range);
+    if (this.target) this.faceActor(this.target);
+    else this.faceTarget();
     this.ctx.events.emit('attackStart', { id: this.actor.id, kind: COMBO_KINDS[index], position: this.pos() });
   }
 
   private startDodge(): void {
     const a = this.actor, d = COMBAT.dodge;
-    const { x, y } = this.ctx.input.moveAxes();
-    if (x === 0 && y === 0) a.forward(this.forced).multiplyScalar(-1);
-    else {
-      const yaw = this.ctx.camera.yaw, sx = Math.sin(yaw), cz = Math.cos(yaw);
-      this.forced.set(sx * y - cz * x, 0, cz * y + sx * x).normalize(); // camera forward*y + right*x
-    }
+    if (!this.inputDir(this.forced)) a.forward(this.forced).multiplyScalar(-1);
     this.forced.multiplyScalar(d.speed);
     a.fighter.startCooldown('dodge', d.cooldown);
     a.fighter.setInvulnerable(d.invulnerable);
     this.begin('dodge', 'dodge');
     this.ctx.events.emit('dodge', { id: a.id });
+  }
+
+  /** Chakra dash: homing rush at a target in range (callers only start it when one exists; the burst is a fallback). */
+  private startDash(): void {
+    const a = this.actor, f = a.fighter, d = COMBAT.chakraDash;
+    if (!f.trySpendChakra(d.cost)) {
+      this.ctx.events.emit('chakraFail', { id: a.id, action: 'dash' });
+      return;
+    }
+    f.startCooldown('dash', d.cooldown);
+    this.target = this.findTarget(d.range);
+    if (this.target) this.faceActor(this.target);
+    else {
+      if (this.inputDir(this.forced)) a.yaw = Math.atan2(this.forced.x, this.forced.z);
+      a.forward(this.forced).multiplyScalar(d.speed);
+    }
+    a.velocity.y = 0;
+    this.begin('dash', 'dash');
+    this.ctx.events.emit('chakraDash', { id: a.id, homing: this.target !== null });
+  }
+
+  /** Substitution jutsu: reappear behind the last attacker, free of stun. Returns false when refused. */
+  private trySubstitution(): boolean {
+    const a = this.actor, f = a.fighter, s = COMBAT.substitution;
+    if (!f.stunned || !f.trySpendSubstitution()) return false;
+    const last = this.ctx.combat.lastAttacker.get(a.id);
+    const attacker = last && last.alive && !last.removed ? last : null;
+    const anchor = attacker ? attacker.position : a.position;
+    // Direction "behind" = from the player through the attacker (or backwards without an attacker).
+    const behind = new THREE.Vector3(anchor.x - a.position.x, 0, anchor.z - a.position.z);
+    if (behind.lengthSq() < 1e-6) a.forward(behind).multiplyScalar(-1);
+    behind.normalize();
+    const left = new THREE.Vector3(behind.z, 0, -behind.x);
+    const from = this.pos();
+    const origin = new THREE.Vector3(anchor.x, anchor.y + COMBAT.hitboxHeight, anchor.z);
+    const dir = [behind, left, left.clone().negate(), behind.clone().negate()]
+      .find((d) => !this.ctx.physics.raycast(origin, d, s.distanceBehind + a.radius, { worldOnly: true }));
+    const to = dir ? new THREE.Vector3(anchor.x, anchor.y, anchor.z).addScaledVector(dir, s.distanceBehind) : a.position.clone();
+    this.ctx.physics.teleport(a.body, to);
+    a.position.copy(to);
+    a.prevPosition.copy(to);
+    a.velocity.set(0, 0, 0);
+    a.knockback.set(0, 0, 0);
+    if (attacker) this.faceActor(attacker);
+    f.clearStun();
+    f.setInvulnerable(s.invulnerable);
+    this.cancel();
+    this.begin('substitution', 'substitution');
+    this.ctx.events.emit('substitution', { id: a.id, from, to: { x: to.x, y: to.y, z: to.z } });
+    return true;
+  }
+
+  /** Camera-relative unit direction of the movement keys into `out`; false when no key is held. */
+  private inputDir(out: THREE.Vector3): boolean {
+    const { x, y } = this.ctx.input.moveAxes();
+    if (x === 0 && y === 0) return false;
+    const yaw = this.ctx.camera.yaw, sx = Math.sin(yaw), cz = Math.cos(yaw);
+    out.set(sx * y - cz * x, 0, cz * y + sx * x).normalize(); // camera forward*y + right*x
+    return true;
+  }
+
+  /**
+   * Faces `t` and forces horizontal velocity toward it, arriving exactly `stop` m away (never overshoots).
+   * Returns the remaining horizontal gap beyond `stop`.
+   */
+  private pullToward(t: Actor, stop: number, speed: number, dt: number): number {
+    const a = this.actor;
+    this.faceActor(t);
+    const dir = this.forced.set(t.position.x - a.position.x, 0, t.position.z - a.position.z);
+    const gap = Math.max(0, dir.length() - stop);
+    if (dir.lengthSq() > 1e-6) dir.normalize();
+    a.control.forcedVelocity = dir.multiplyScalar(Math.min(speed, gap / dt));
+    return gap;
+  }
+
+  /**
+   * Homing target: the lock target if within `range`, else the nearest living enemy within `range`
+   * inside the homing cone around the camera or player forward.
+   */
+  private findTarget(range: number): Actor | null {
+    const a = this.actor;
+    const lock = this.lockTarget();
+    if (lock && lock.position.distanceTo(a.position) <= range) return lock;
+    const cosHalf = Math.cos(((COMBAT.homing.coneDeg / 2) * Math.PI) / 180);
+    const yaw = this.ctx.camera.yaw, cx = Math.sin(yaw), cz = Math.cos(yaw);
+    const px = Math.sin(a.yaw), pz = Math.cos(a.yaw);
+    let best: Actor | null = null;
+    let bestD = range;
+    for (const e of this.ctx.enemies()) {
+      const dx = e.position.x - a.position.x, dz = e.position.z - a.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d > bestD) continue;
+      const inCone = d < 1e-3 || (dx * cx + dz * cz) / d >= cosHalf || (dx * px + dz * pz) / d >= cosHalf;
+      if (inCone) { best = e; bestD = d; }
+    }
+    return best;
   }
 
   private throwKunai(): void {
@@ -230,7 +359,7 @@ export class PlayerCombat {
     });
   }
 
-  private begin(move: Move, anim: (typeof COMBO_ANIMS)[number] | 'throw' | 'special' | 'dodge'): void {
+  private begin(move: Move, anim: AnimState): void {
     this.move = move;
     this.t = 0;
     this.fired = false;
@@ -247,6 +376,7 @@ export class PlayerCombat {
   private cancel(): void {
     if (this.move === 'attack') this.comboIndex = 0;
     this.endMove();
+    this.target = null;
     this.attackBuffer = 0;
     this.setVisuals(false, false, false);
   }

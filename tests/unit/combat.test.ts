@@ -103,6 +103,39 @@ describe('CombatSystem.dealDamage', () => {
   });
 });
 
+describe('CombatSystem launch', () => {
+  it('launch sets upward velocity and the launched anim until landing, then hit stun', () => {
+    const p = actor('player', 0, 0);
+    const e = actor('melee', 0, 2);
+    e.grounded = true;
+    const { combat, log } = setup([p, e]);
+    combat.dealDamage(p, e, 10, 8, 'combo5', e.chest(), 9, 0.4);
+    expect(e.velocity.y).toBe(9);
+    expect(e.grounded).toBe(false);
+    expect(e.anim).toBe('launched');
+    expect(log.find((l) => l.type === 'hitStop')?.e).toEqual({ duration: COMBAT.hitStopHeavy });
+    for (let i = 0; i < 120; i++) combat.update(DT); // 2 s airborne
+    expect(e.anim).toBe('launched');
+    expect(e.fighter.stunned).toBe(true);
+    e.grounded = true;
+    combat.update(DT);
+    expect(e.anim).toBe('hit');
+    expect(e.fighter.stunRemaining).toBeGreaterThan(COMBAT.launchLandStun - 2 * DT);
+    expect(combat.lastAttacker.get(e.id)).toBe(p);
+  });
+
+  it('guarded hits never launch; stun override replaces the default', () => {
+    const p = actor('player', 0, 0);
+    const e = actor('melee', 0, 2);
+    const { combat } = setup([p, e]);
+    p.fighter.guarding = true;
+    combat.dealDamage(e, p, 10, 8, 'enemyMelee', p.chest(), 9);
+    expect(p.velocity.y).toBe(0);
+    combat.dealDamage(p, e, 1, 0, 'combo1', e.chest(), 0, 0.9);
+    expect(e.fighter.stunRemaining).toBeCloseTo(0.9);
+  });
+});
+
 describe('CombatSystem projectiles', () => {
   it('flies straight, hits the first enemy once, then is removed', () => {
     const p = actor('player', 0, 0);

@@ -35,7 +35,12 @@ export class CameraRig {
   private readonly look = new THREE.Vector3();
 
   /** Called once the context exists. */
-  attach(ctx: GameContext): void { this.ctx = ctx; }
+  attach(ctx: GameContext): void {
+    this.ctx = ctx;
+    // Storm-style hard cut: substitution and respawn teleport the player, so the camera jumps with it.
+    ctx.events.on('substitution', (e) => { if (e.id === ctx.player.id) this.snap = true; });
+    ctx.events.on('respawn', (e) => { if (e.id === ctx.player.id) this.snap = true; });
+  }
 
   /** Simulation step: lock-on toggle/switch, lost target handling. */
   updateSim(_dt: number): void {

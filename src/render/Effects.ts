@@ -4,7 +4,7 @@ import type { Vec3Like } from '../core/types';
 import type { Actor } from '../game/Actor';
 import { toon } from './toon';
 import { crackTexture, glintTexture, hexShieldTexture, impactLinesTexture, impactStarTexture } from './fx/textures';
-import { shockwaveMaterial, swirlGeometry } from './fx/shapes';
+import { shockwaveMaterial, swirlGeometry, trailGeometry } from './fx/shapes';
 
 /** VFX tuning. Times in seconds, distances in metres. Intensities > 1 are HDR and bloom. */
 const FX = {
@@ -28,12 +28,25 @@ const FX = {
   // Rasengan burst
   shockFrom: 0.3, shockTo: 2.4, shockLife: 0.4, shockGlow: 1.6,
   swirlFrom: 0.4, swirlTo: 3, swirlLife: 0.55, swirlSpin: 9, swirlGlow: 2.2,
-  crackSize: 3.2, crackLife: 1.6, crackFade: 0.5, techniqueGroundDrop: 0.9,
+  hitboxDrop: 1, crackSize: 3.2, crackLife: 1.6, crackFade: 0.5, techniqueGroundDrop: 0.9,
   // concentration flames
   concentrateRate: 70, concentrateRadius: 0.55, concentrateRise: 2.6, concentrateLife: 0.6,
   // death poof
   deathPuffs: 26, deathPuffSpeed: 3.2, deathPuffLife: 0.9, deathPuffSize: 0.55, deathHeight: 0.8,
   lightIntensity: 3, lightRange: 7, lightDecay: 8,
+  // chakra dash: burst, trailing streak (per dashing actor), world-space speed lines, chakra wake
+  maxStreaks: 3, maxLines: 160, dashBurst: 26, dashBurstSpeed: 7, streakWidth: 0.9, streakPerSpeed: 0.12, streakMin: 0.8, streakMax: 3.2,
+  streakGlow: 2.4, streakFade: 0.15, dashGrace: 0.1, chestHeight: 1.0,
+  lineRate: 220, lineSpeed: 26, lineLife: 0.12, lineSize: 0.025, lineStretch: 16, lineRadius: 0.9, lineGlow: 2.2,
+  wakeRate: 90, wakeLife: 0.35,
+  // substitution: big smoke poof + wooden log that drops, rolls, then pops out
+  maxLogs: 3, logRadius: 0.2, logLength: 1.2, logLife: 1.5, logShrink: 0.25, logDrop: 0.7, logTilt: 1.25, logRollSpeed: 1.6,
+  logRollDrag: 1.5, logBounce: 0.25, logSettle: 10, logBark: 0xc98d4f, logCut: 0xf2d39a,
+  subPuffs: 34, subPuffSpeed: 3.4, subPuffSize: 0.6, subPuffLife: 0.85, subToPuffs: 14,
+  // double jump: wind ring + chakra puff under the feet
+  airRingTo: 2.1, airPuffs: 16, airPuffSpeed: 3.5,
+  // launcher (combo5) extras
+  launchDust: 16, launchDustSpeed: 4.5, launchRingTo: 3.2,
 };
 
 /** Particle size curve over normalised age k ∈ [0,1]: shrink (sparks) or puff (grow then shrink). */
@@ -61,6 +74,11 @@ interface Billboard {
   follow: number | null; yOff: number;
 }
 
+/** Chakra-dash trail attached to an actor. */
+interface Streak { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; id: number | null; t: number; fade: number; acc: number; wake: number }
+/** Substitution log: drops, bounces, rolls, then shrinks out. */
+interface Log { mesh: THREE.Mesh; life: number; vy: number; v: number; roll: number; tilt: number; ground: number; yaw: number }
+
 /** Generic timed mesh (shockwave, swirl, crack decal). */
 interface Timed<M extends THREE.Material> { mesh: THREE.Mesh; mat: M; life: number; max: number; from: number; to: number; spin: number }
 
@@ -83,6 +101,12 @@ export class Effects {
   private readonly sparks: Pool;
   private readonly chakra: Pool;
   private readonly dust: Pool;
+  private readonly lines: Pool;
+  private readonly streakGeo = trailGeometry(1, FX.streakWidth);
+  private readonly streaks: Streak[] = [];
+  private readonly logGeo = new THREE.CylinderGeometry(FX.logRadius, FX.logRadius * 1.08, FX.logLength, 10).rotateZ(Math.PI / 2);
+  private readonly logMats = [toon(FX.logBark, { rim: 0.35 }), toon(FX.logCut, { rim: 0.35 })];
+  private readonly logs: Log[] = [];
   private readonly rings: Ring[] = [];
   private readonly ringGeo = new THREE.RingGeometry(0.8, 1, 40).rotateX(-Math.PI / 2);
   private readonly tex = { star: impactStarTexture(), lines: impactLinesTexture(), hex: hexShieldTexture(), glint: glintTexture(), crack: crackTexture() };
@@ -106,6 +130,18 @@ export class Effects {
     this.chakra = this.makePool(FX.maxChakra, new THREE.OctahedronGeometry(1, 0), new THREE.MeshBasicMaterial(additive), FX.chakraGravity, FX.chakraDrag, FX.chakraStretch, 'shrink');
     // Opaque 2-tone cel puffs: lit by the sun through the toon ramp, outlined by the ink pass.
     this.dust = this.makePool(FX.maxDust, new THREE.IcosahedronGeometry(1, 1), toon(0xffffff, { rim: 0.35 }), FX.dustGravity, FX.dustDrag, 0, 'puff');
+    this.lines = this.makePool(FX.maxLines, new THREE.OctahedronGeometry(1, 0), new THREE.MeshBasicMaterial(additive), 0, 0, FX.lineStretch, 'shrink');
+    for (let i = 0; i < FX.maxStreaks; i++) {
+      const mat = new THREE.MeshBasicMaterial({ ...additive, vertexColors: true, side: THREE.DoubleSide });
+      this.streaks.push({ mesh: this.add(new THREE.Mesh(this.streakGeo, mat)), mat, id: null, t: 0, fade: 0, acc: 0, wake: 0 });
+    }
+    for (let i = 0; i < FX.maxLogs; i++) {
+      // Cylinder groups: 0 = bark side, 1/2 = cut ends.
+      const mesh = this.add(new THREE.Mesh(this.logGeo, [this.logMats[0], this.logMats[1], this.logMats[1]]), 0);
+      mesh.castShadow = true;
+      mesh.rotation.order = 'YZX'; // roll about the log axis (X), then tilt (Z), then yaw (Y)
+      this.logs.push({ mesh, life: 0, vy: 0, v: 0, roll: 0, tilt: 0, ground: 0, yaw: 0 });
+    }
     for (let i = 0; i < FX.maxRings; i++) {
       const mat = new THREE.MeshBasicMaterial({ ...additive, side: THREE.DoubleSide });
       const mesh = this.add(new THREE.Mesh(this.ringGeo, mat));
@@ -257,10 +293,12 @@ export class Effects {
           this.impact(e.position, FX.starKillSize, FX.starHeavyLife, true, FX.hitColor);
           this.flashLight(e.position, FX.killColor, 1.2);
         } else {
-          const heavy = e.kind === 'combo3' || e.kind === 'special';
+          const launcher = e.kind === 'combo5';
+          const heavy = launcher || e.kind === 'combo3' || e.kind === 'combo4' || e.kind === 'special';
           this.spark(e.position, FX.hitColor, heavy ? 28 : 16, heavy ? 8 : 6, 0.35);
-          this.impact(e.position, heavy ? FX.starHeavySize : FX.starSize, heavy ? FX.starHeavyLife : FX.starLife, heavy);
+          this.impact(e.position, launcher ? FX.starKillSize : heavy ? FX.starHeavySize : FX.starSize, heavy ? FX.starHeavyLife : FX.starLife, heavy);
           if (heavy) this.ring(e.position, FX.hitColor, 0.2, 1.4, 0.22, 0.8);
+          if (launcher) this.launcherBlast(e.targetId, e.position);
         }
       }),
       on('death', (e) => {
@@ -286,6 +324,13 @@ export class Effects {
       on('jump', (e) => {
         const p = this.feet(e.id);
         if (!p) return;
+        if (e.air) {
+          this.ring(p, FX.windColor, 0.4, FX.airRingTo, FX.windRingLife * 1.4, 0.8, null, 1.5);
+          this.ring(p, FX.chakraColor, 0.2, 1.1, FX.windRingLife, 0.9);
+          this.emit(this.chakra, p, FX.chakraColor, FX.airPuffs, FX.airPuffSpeed, 0.3, FX.chakraSize, -0.6, 0.3, FX.chakraGlow);
+          this.poof(p, 6, 1.4, 0.4, FX.dustSize, 0.4);
+          return;
+        }
         this.emit(this.dust, p.setY(p.y + 0.05), FX.dustColor, 4, 1.6, 0.35, FX.dustSize * 0.7, 0.1, 0.4);
         this.ring(p, FX.windColor, 0.3, 1.3, FX.windRingLife, 0.7, null, 1.3);
       }),
@@ -331,6 +376,25 @@ export class Effects {
         this.poof(p.setY(p.y + 0.8), 26, 2.2, 0.8, FX.dustSize * 1.8, 1.2);
         this.ring(p.setY(p.y - 0.8), 0xffffff, 0.3, 2.5, 0.4, 0.6, null, 1.2);
       }),
+      on('chakraDash', (e) => {
+        const a = this.getActor(e.id);
+        if (!a) return;
+        const c = tmpV.copy(a.position).setY(a.position.y + FX.chestHeight);
+        this.emit(this.chakra, c, FX.chakraColor, FX.dashBurst, FX.dashBurstSpeed, 0.35, FX.chakraSize, 0.1, 0.3, FX.chakraGlow);
+        this.emit(this.chakra, c, FX.chakraCore, FX.dashBurst / 3, FX.dashBurstSpeed * 0.5, 0.25, FX.chakraSize, 0.1, 0.2, FX.chakraGlow);
+        this.ring(a.position, FX.chakraColor, 0.3, e.homing ? 2.4 : 1.8, 0.3, 0.9);
+        this.poof(tmpV.copy(a.position).setY(a.position.y + 0.1), 6, 2, 0.35, FX.dustSize, 0.5);
+        const s = this.streaks.find((x) => x.id === e.id) ?? this.streaks.find((x) => x.id === null && x.fade <= 0) ?? this.streaks.reduce((x, y) => (x.fade < y.fade ? x : y));
+        s.id = e.id; s.t = 0; s.fade = 1; s.acc = 0; s.wake = 0;
+      }),
+      on('substitution', (e) => {
+        tmpV.set(e.from.x, e.from.y + FX.deathHeight, e.from.z);
+        this.poof(tmpV, FX.subPuffs, FX.subPuffSpeed, FX.subPuffLife, FX.subPuffSize, 1);
+        this.ring(e.from, FX.smokeColor, 0.4, 2.6, 0.35, 0.7, null, 1.2);
+        this.spawnLog(e.from);
+        tmpV.set(e.to.x, e.to.y + FX.deathHeight, e.to.z);
+        this.poof(tmpV, FX.subToPuffs, FX.subPuffSpeed * 0.6, FX.subPuffLife * 0.7, FX.subPuffSize * 0.6, 0.6);
+      }),
       on('concentrateStart', (e) => {
         const p = this.feet(e.id);
         if (!p) return;
@@ -340,6 +404,25 @@ export class Effects {
     );
   }
 
+  /** Launcher finisher: shock ring on the ground, upward dust column, rising sparks, light flash. */
+  private launcherBlast(targetId: number, p: Vec3Like): void {
+    const g = this.feet(targetId) ?? tmpP.set(p.x, p.y - FX.hitboxDrop, p.z);
+    g.y += 0.05;
+    this.ring(g, FX.hitColor, 0.3, FX.launchRingTo, 0.35, 0.9, null, 2.2);
+    this.ring(g, FX.windColor, 0.2, FX.launchRingTo * 0.6, 0.25, 0.7, null, 1.4);
+    this.emit(this.dust, g, FX.dustColor, FX.launchDust, FX.launchDustSpeed, 0.7, FX.dustSize * 1.3, 1.4, 0.8);
+    this.emit(this.sparks, p, FX.hitColor, 18, 10, 0.4, FX.sparkSize, 1.6, 0, FX.sparkGlow);
+    this.flashLight(p, FX.hitColor, 1.3);
+  }
+
+  private spawnLog(p: Vec3Like): void {
+    const l = this.logs.find((x) => x.life <= 0) ?? this.logs.reduce((a, b) => (a.life < b.life ? a : b));
+    l.life = FX.logLife; l.vy = 0; l.v = 0; l.roll = 0; l.tilt = FX.logTilt; l.ground = p.y; l.yaw = this.rand() * Math.PI * 2;
+    l.mesh.position.set(p.x, p.y + FX.logDrop + FX.logLength / 2, p.z);
+    l.mesh.scale.setScalar(1);
+    l.mesh.visible = true;
+  }
+
   /** Generic burst at a position. */
   burst(pos: THREE.Vector3, color: number, count = 16): void {
     this.spark(pos, color, count, 6, 0.4);
@@ -347,7 +430,7 @@ export class Effects {
 
   /** Number of live particles (all pools). */
   get liveParticles(): number {
-    return this.sparks.live + this.chakra.live + this.dust.live;
+    return this.sparks.live + this.chakra.live + this.dust.live + this.lines.live;
   }
 
   update(dt: number): void {
@@ -355,6 +438,9 @@ export class Effects {
     this.stepPool(this.sparks, dt);
     this.stepPool(this.chakra, dt);
     this.stepPool(this.dust, dt);
+    this.updateStreaks(dt);
+    this.stepPool(this.lines, dt);
+    this.updateLogs(dt);
     this.updateRings(dt);
     this.updateBillboards(dt);
     for (const s of this.shocks) {
@@ -386,6 +472,71 @@ export class Effects {
     t.life -= dt;
     if (t.life <= 0) { t.mesh.visible = false; return -1; }
     return 1 - t.life / t.max;
+  }
+
+  /** Dash trails: follow the actor while its anim is `dash`, emit speed lines + chakra wake, fade out after. */
+  private updateStreaks(dt: number): void {
+    for (const s of this.streaks) {
+      if (s.fade <= 0) continue;
+      const a = s.id !== null ? this.getActor(s.id) : undefined;
+      s.t += dt;
+      const dashing = !!a && a.alive && (a.anim === 'dash' || s.t < FX.dashGrace);
+      if (!dashing) { s.id = null; s.fade -= dt / FX.streakFade; }
+      if (s.fade <= 0) { s.mesh.visible = false; continue; }
+      if (a) {
+        const v = a.velocity;
+        const sp = Math.hypot(v.x, v.z);
+        const yaw = sp > 0.5 ? Math.atan2(v.x, v.z) : a.yaw;
+        s.mesh.position.set(a.position.x, a.position.y + FX.chestHeight, a.position.z);
+        s.mesh.rotation.set(0, yaw, 0);
+        s.mesh.scale.set(1, 1, Math.min(FX.streakMax, Math.max(FX.streakMin, sp * FX.streakPerSpeed)));
+        if (dashing) this.dashParticles(s, a.position, yaw, dt);
+      }
+      s.mat.color.set(FX.chakraColor).multiplyScalar(FX.streakGlow * s.fade);
+      s.mesh.visible = true;
+    }
+  }
+
+  private dashParticles(s: Streak, p: THREE.Vector3, yaw: number, dt: number): void {
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);
+    for (s.acc += FX.lineRate * dt; s.acc >= 1; s.acc--) {
+      const th = this.rand() * Math.PI * 2, r = FX.lineRadius * (0.4 + 0.6 * this.rand());
+      // ring around the dash axis: sideways offset (perpendicular to forward) + height
+      const side = Math.cos(th) * r, up = FX.chestHeight + Math.sin(th) * r;
+      const ahead = (this.rand() - 0.2) * 1.2;
+      this.spawn(this.lines, p.x + fz * side + fx * ahead, p.y + up, p.z - fx * side + fz * ahead,
+        -fx * FX.lineSpeed, 0, -fz * FX.lineSpeed, FX.lineLife, FX.lineSize * (0.6 + 0.8 * this.rand()),
+        this.rand() < 0.5 ? FX.windColor : FX.chakraCore, FX.lineGlow);
+    }
+    for (s.wake += FX.wakeRate * dt; s.wake >= 1; s.wake--) {
+      this.spawn(this.chakra, p.x + (this.rand() - 0.5) * 0.4, p.y + 0.2 + this.rand() * 1.4, p.z + (this.rand() - 0.5) * 0.4,
+        -fx * 2, 0.5, -fz * 2, FX.wakeLife * (0.6 + 0.4 * this.rand()), FX.chakraSize * (0.5 + 0.6 * this.rand()),
+        this.rand() < 0.3 ? FX.chakraCore : FX.chakraColor, FX.chakraGlow);
+    }
+    for (const pool of [this.lines, this.chakra]) if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
+  }
+
+  private updateLogs(dt: number): void {
+    for (const l of this.logs) {
+      if (l.life <= 0) continue;
+      l.life -= dt;
+      if (l.life <= 0) { l.mesh.visible = false; continue; }
+      const m = l.mesh;
+      l.vy -= FX.gravity * dt;
+      m.position.y += l.vy * dt;
+      const rest = l.ground + FX.logRadius;
+      if (m.position.y <= rest) {
+        m.position.y = rest;
+        if (l.vy < -1) { l.vy *= -FX.logBounce; if (l.v === 0) l.v = FX.logRollSpeed; } else l.vy = 0;
+        l.tilt += (0 - l.tilt) * (1 - Math.exp(-FX.logSettle * dt)); // topple flat
+      }
+      l.v *= Math.exp(-FX.logRollDrag * dt);
+      m.position.x += Math.sin(l.yaw) * l.v * dt;
+      m.position.z += Math.cos(l.yaw) * l.v * dt;
+      l.roll += (l.v / FX.logRadius) * dt;
+      m.rotation.set(l.roll, l.yaw, l.tilt); // yaw keeps the log axis (X) perpendicular to its roll direction
+      m.scale.setScalar(Math.min(1, l.life / FX.logShrink));
+    }
   }
 
   /** Rising blue chakra flames around every actor still concentrating. */
@@ -483,7 +634,9 @@ export class Effects {
   }
 
   clear(): void {
-    for (const pool of [this.sparks, this.chakra, this.dust]) {
+    for (const s of this.streaks) { s.id = null; s.fade = 0; s.mesh.visible = false; }
+    for (const l of this.logs) { l.life = 0; l.mesh.visible = false; }
+    for (const pool of [this.sparks, this.chakra, this.dust, this.lines]) {
       pool.life.fill(0);
       pool.live = 0;
       for (let i = 0; i < pool.life.length; i++) pool.mesh.setMatrixAt(i, ZERO_M);
@@ -500,7 +653,11 @@ export class Effects {
   dispose(): void {
     this.unsub.forEach((u) => u());
     this.clear();
-    for (const pool of [this.sparks, this.chakra, this.dust]) {
+    for (const s of this.streaks) { s.mat.dispose(); s.mesh.removeFromParent(); }
+    for (const l of this.logs) l.mesh.removeFromParent();
+    this.logMats.forEach((m) => m.dispose());
+    for (const g of [this.streakGeo, this.logGeo]) g.dispose();
+    for (const pool of [this.sparks, this.chakra, this.dust, this.lines]) {
       pool.mesh.geometry.dispose();
       (pool.mesh.material as THREE.Material).dispose();
       pool.mesh.dispose();

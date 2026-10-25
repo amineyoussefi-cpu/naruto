@@ -25,6 +25,7 @@ export class PlayerController {
   private readonly footsteps = new FootstepTimer();
   private sprinting = false;
   private airTime = 0;
+  private airJumpsLeft: number = MOVEMENT.airJumps;
 
   constructor(private readonly ctx: GameContext, private readonly actor: Actor) {}
 
@@ -69,10 +70,23 @@ export class PlayerController {
     const speed = moving ? (this.sprinting ? MOVEMENT.sprintSpeed : MOVEMENT.runSpeed) * c.moveFactor : 0;
     this.wish.multiplyScalar(moving ? speed : 0);
 
+    if (a.grounded) this.airJumpsLeft = MOVEMENT.airJumps;
     if (this.jumpAssist.update(dt, a.grounded, jumpPressed)) {
       a.velocity.y = jumpVelocity(MOVEMENT.jumpHeight, MOVEMENT.gravity);
       a.grounded = false;
       this.ctx.events.emit('jump', { id: a.id });
+      if (!c.animLocked) a.setAnim('jump', true);
+    } else if (jumpPressed && !a.grounded && this.airTime > MOVEMENT.coyoteTime && this.airJumpsLeft > 0) {
+      // Double jump: fresh upward kick, momentum redirected toward the input (Storm-style air control).
+      this.airJumpsLeft--;
+      this.jumpAssist.reset(); // the press must not also fire a buffered jump on landing
+      a.velocity.y = jumpVelocity(MOVEMENT.doubleJumpHeight, MOVEMENT.gravity);
+      if (moving && speed > 0) {
+        const h = Math.max(Math.hypot(a.velocity.x, a.velocity.z), speed);
+        a.velocity.x = this.wish.x / speed * h;
+        a.velocity.z = this.wish.z / speed * h;
+      }
+      this.ctx.events.emit('jump', { id: a.id, air: true });
       if (!c.animLocked) a.setAnim('jump', true);
     }
 
@@ -136,6 +150,7 @@ export class PlayerController {
     a.velocity.set(0, 0, 0);
     this.sprinting = false;
     this.jumpAssist.reset();
+    this.airJumpsLeft = MOVEMENT.airJumps;
     this.wallNormal.copy(hit);
     a.wallNormal.copy(hit);
     a.yaw = Math.atan2(-hit.x, -hit.z);
@@ -231,6 +246,7 @@ export class PlayerController {
     this.sprinting = false;
     this.airTime = 0;
     this.jumpAssist.reset();
+    this.airJumpsLeft = MOVEMENT.airJumps;
     this.footsteps.reset();
   }
 

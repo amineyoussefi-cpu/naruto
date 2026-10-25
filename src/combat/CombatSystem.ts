@@ -16,6 +16,10 @@ export interface HitboxSpec {
   duration: number;
   damage: number;
   knockback: number;
+  /** Upward velocity (m/s) given to the target: launcher. */
+  launch?: number;
+  /** Hit stun override (s) instead of the team default. */
+  stun?: number;
 }
 
 export interface ProjectileSpec {
@@ -41,7 +45,7 @@ export function sphereHitsActor(center: THREE.Vector3, r: number, a: Actor): boo
   return dx * dx + dz * dz <= reach * reach && center.y + r >= a.position.y && center.y - r <= a.position.y + a.height;
 }
 
-const isHeavy = (kind: AttackKind) => kind === 'combo3' || kind === 'special';
+const isHeavy = (kind: AttackKind) => kind === 'combo5' || kind === 'special';
 
 /** Hitboxes, projectiles, damage resolution and fighter ticking. Owner: combat agent. */
 export class CombatSystem {
@@ -49,6 +53,8 @@ export class CombatSystem {
   private projectiles: Projectile[] = [];
   private readonly tmp = new THREE.Vector3();
   private readonly tmp2 = new THREE.Vector3();
+  /** Last actor that landed a (non-ignored) hit on each target id (substitution destination). */
+  readonly lastAttacker = new Map<number, Actor>();
 
   constructor(private readonly ctx: GameContext) {}
 
@@ -73,9 +79,13 @@ export class CombatSystem {
   }
 
   /** Applies a hit from `source` to `target` (guard, invulnerability, knockback, stun, events). */
-  dealDamage(source: Actor, target: Actor, damage: number, knockback: number, kind: AttackKind, hitPoint: THREE.Vector3): void {
+  dealDamage(
+    source: Actor, target: Actor, damage: number, knockback: number, kind: AttackKind, hitPoint: THREE.Vector3,
+    launch = 0, stun?: number,
+  ): void {
     const res = target.fighter.applyHit({ damage });
     if (res.ignored) return;
+    this.lastAttacker.set(target.id, source);
     const ev = this.ctx.events;
     const position = { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z };
     ev.emit('damage', { targetId: target.id, sourceId: source.id, amount: res.applied, blocked: res.blocked, killed: res.killed, kind, position });
@@ -89,8 +99,12 @@ export class CombatSystem {
       target.setAnim('dead', true);
       ev.emit('death', { id: target.id, team: target.team });
     } else if (!res.blocked) {
-      target.fighter.setStun(target.team === 'player' ? COMBAT.hitStun : ENEMIES.hitStun);
-      target.setAnim('hit', true);
+      target.fighter.setStun(stun ?? (target.team === 'player' ? COMBAT.hitStun : ENEMIES.hitStun));
+      target.setAnim(launch > 0 ? 'launched' : 'hit', true);
+    }
+    if (launch > 0 && !res.blocked) {
+      target.velocity.y = launch;
+      target.grounded = false;
     }
     if (!res.blocked) target.model.flash(COMBAT.hitFlash);
 
@@ -98,6 +112,7 @@ export class CombatSystem {
       const heavy = isHeavy(kind) || res.killed;
       ev.emit('hitStop', { duration: heavy ? COMBAT.hitStopHeavy : COMBAT.hitStop });
       const s = res.blocked ? COMBAT.shake.blocked
+        : kind === 'combo5' ? COMBAT.shake.launcher
         : heavy ? COMBAT.shake.heavy
         : target.team === 'player' ? COMBAT.shake.playerHit : COMBAT.shake.light;
       ev.emit('cameraShake', { intensity: s.intensity, duration: s.duration });
@@ -106,7 +121,13 @@ export class CombatSystem {
 
   /** Ticks every fighter, hitboxes and projectiles. */
   update(dt: number): void {
-    for (const a of this.ctx.actors) a.fighter.tick(dt);
+    for (const a of this.ctx.actors) {
+      a.fighter.tick(dt);
+      // Launched: stay stunned while airborne, then a short 'hit' stun on landing.
+      if (a.anim !== 'launched' || !a.alive || !a.fighter.stunned) continue;
+      if (!a.grounded) a.fighter.setStun(COMBAT.launchLandStun);
+      else a.setAnim('hit', true);
+    }
     this.updateHitboxes(dt);
     this.updateProjectiles(dt);
   }
@@ -125,7 +146,7 @@ export class CombatSystem {
       for (const t of this.targets(owner.team)) {
         if (h.hit.has(t.id) || !sphereHitsActor(c, h.spec.radius, t)) continue;
         h.hit.add(t.id);
-        this.dealDamage(owner, t, h.spec.damage, h.spec.knockback, h.spec.kind, t.chest());
+        this.dealDamage(owner, t, h.spec.damage, h.spec.knockback, h.spec.kind, t.chest(), h.spec.launch, h.spec.stun);
       }
       h.age += dt;
       return true;
@@ -168,6 +189,7 @@ export class CombatSystem {
     for (const p of this.projectiles) disposeObject(p.mesh);
     this.projectiles = [];
     this.hitboxes = [];
+    this.lastAttacker.clear();
   }
 
   dispose(): void {

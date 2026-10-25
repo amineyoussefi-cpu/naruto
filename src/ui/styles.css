@@ -151,6 +151,12 @@ kbd {
 .enemy-bar-fill { background: linear-gradient(180deg, #ff8a6a, var(--red)); }
 #hud-crosshair { width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 0; background: transparent; border: 2px solid var(--cream); transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
 
+/* Substitution gauge: four slanted pips (one use each). */
+#hud-sub { display: flex; align-items: center; gap: 5px; margin-left: 18px; }
+.sub-label { font: italic 900 .62rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--cream); margin-right: 4px; text-shadow: 0 1px 2px #000; }
+.sub-pip { position: relative; width: 34px; height: 9px; transform: skewX(-18deg); background: rgba(0,0,0,.6); box-shadow: 0 0 0 1.5px rgba(244,232,204,.8); overflow: hidden; }
+.sub-fill { position: absolute; inset: 0; transform-origin: left center; background: linear-gradient(180deg, #d8fff0, #3fd6a0); }
+
 @media (prefers-reduced-motion: reduce) {
   #hud-chakra.anim, #hud-banner.anim, .enemy-bar.telegraph, #hud-hp.low .fill { animation: none; }
 }

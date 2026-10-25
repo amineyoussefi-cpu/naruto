@@ -11,7 +11,12 @@ export interface GameEvents {
   technique: { id: number; name: 'special'; position: Vec3Like };
   projectileHit: { position: Vec3Like; hitActor: boolean };
   dodge: { id: number };
-  jump: { id: number };
+  /** Chakra dash started; `homing` when it rushes at a target. */
+  chakraDash: { id: number; homing: boolean };
+  /** Substitution jutsu: a log is left at `from`, the ninja reappears at `to`. */
+  substitution: { id: number; from: Vec3Like; to: Vec3Like };
+  /** `air` = double jump. */
+  jump: { id: number; air?: boolean };
   land: { id: number; impact: number };
   footstep: { id: number; sprint: boolean };
   climbStart: { id: number };

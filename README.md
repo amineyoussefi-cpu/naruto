@@ -4,8 +4,9 @@ Jeu de combat de ninjas en 3D, solo, à la troisième personne, jouable dans le 
 Inspiré par la mobilité et le rythme de *Kizuna Drive*, *Shinobi Striker* et *Ultimate Ninja Storm 3*,
 avec des personnages, une arène et des sons 100 % originaux et procéduraux (voir [ASSETS.md](ASSETS.md)).
 
-Survivez à 5 vagues de ninjas (mêlée et distance) dans une arène d'entraînement : courez, sprintez, sautez,
-escaladez les falaises au chakra, enchaînez les combos, lancez des kunaï et déclenchez le Rasengan.
+Survivez à 5 vagues de ninjas (mêlée et distance) dans une arène d'entraînement, avec un rythme inspiré de *Storm 3* :
+ruée de chakra vers l'ennemi, combos de 5 coups qui foncent sur la cible et projettent l'adversaire, permutation pour
+fuir un enchaînement, double saut, marche sur les murs au chakra, kunaï et Rasengan.
 
 ## Prérequis
 
@@ -64,14 +65,14 @@ L'aide affiche les libellés adaptés (détection automatique, modifiable dans P
 |---|---|---|
 | Déplacement | W A S D | Z Q S D |
 | Caméra | Souris | Souris |
-| Sprint | Maj | Maj |
-| Saut / escalade (près d'un mur) | Espace | Espace |
-| Attaque (combo 3 coups) | Clic gauche | Clic gauche |
+| Ruée de chakra vers la cible (appui) / course ninja (maintenu) | Maj | Maj |
+| Saut, double saut en l'air, marche sur les murs (près d'un mur) | Espace | Espace |
+| Combo 5 coups à tête chercheuse, le 5ᵉ projette l'ennemi | Clic gauche (marteler) | Clic gauche (marteler) |
 | Garde | Clic droit (maintenir) | Clic droit (maintenir) |
 | Kunaï (distance) | Q ou clic molette | A ou clic molette |
 | Rasengan (35 chakra) | E | E |
 | Concentration (recharge chakra) | R (maintenir) | R (maintenir) |
-| Esquive | C | C |
+| Esquive ; quand vous êtes touché : permutation (jauge de 4) | C | C |
 | Verrouiller / libérer la cible | F | F |
 | Changer de cible | Tab / molette | Tab / molette |
 | Pause | Échap / P | Échap / P |

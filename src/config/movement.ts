@@ -1,21 +1,25 @@
 /** Player locomotion tuning. Units: metres, seconds, radians. Owner: movement agent. */
 export const MOVEMENT = {
   walkSpeed: 4.5,
-  runSpeed: 7.5,
-  sprintSpeed: 12,
-  /** Ground acceleration / braking (m/s²). */
-  acceleration: 45,
-  deceleration: 55,
+  /** Storm-style pace: brisk run, very fast ninja sprint (Shift held). */
+  runSpeed: 10,
+  sprintSpeed: 17,
+  /** Ground acceleration / braking (m/s²): near-instant starts and stops. */
+  acceleration: 90,
+  deceleration: 100,
   /** Fraction of ground acceleration available while airborne. */
-  airControl: 0.35,
-  gravity: 28,
-  jumpHeight: 2.4,
+  airControl: 0.6,
+  gravity: 34,
+  jumpHeight: 3.2,
+  /** Second jump in the air (height in m); it also redirects horizontal momentum toward the input. */
+  doubleJumpHeight: 2.6,
+  airJumps: 1,
   maxFallSpeed: 40,
   /** Grace periods that make jumping feel reliable. */
   coyoteTime: 0.12,
   jumpBuffer: 0.12,
   /** Max turn rate toward the facing target (rad/s). */
-  turnSpeed: 14,
+  turnSpeed: 22,
   /** Knockback decay rate (1/s, exponential-ish). */
   knockbackDecay: 8,
   /** Horizontal speed below which the player counts as standing still (m/s). */

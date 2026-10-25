@@ -16,7 +16,8 @@ export const CAMERA = {
   /** Radians per pixel at sensitivity 1. */
   mouseRadPerPx: 0.0025,
   /** Pivot follow smoothing (1/s). */
-  followSharpness: 14,
+  /** High so the camera keeps up with Storm-speed dashes. */
+  followSharpness: 22,
   /** Distance kept from walls hit by the collision ray (m). */
   collisionPadding: 0.25,
   /** Zoom-back-out smoothing after a wall stops blocking (1/s). */

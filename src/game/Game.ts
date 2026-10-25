@@ -381,7 +381,7 @@ export class Game implements GameApi {
     }
     const t = this.camera.lockTarget;
     return {
-      player: { hp: f.hp, maxHp: f.maxHp, chakra: f.chakra, maxChakra: f.maxChakra, concentrating: f.concentrating, guarding: f.guarding, climbing: p.climbing },
+      player: { hp: f.hp, maxHp: f.maxHp, chakra: f.chakra, maxChakra: f.maxChakra, concentrating: f.concentrating, guarding: f.guarding, climbing: p.climbing, substitution: f.substitution, maxSubstitution: f.maxSubstitution },
       cooldowns: [
         cd('special', 'Rasengan', labels.special, COMBAT.special.cooldown, COMBAT.special.chakraCost),
         cd('kunai', 'Kunai', labels.kunai.split(' ')[0], COMBAT.kunai.cooldown, 0),

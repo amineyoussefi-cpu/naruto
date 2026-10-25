@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Fighter } from '../../src/combat/Fighter';
 import { CHAKRA } from '../../src/config/chakra';
+import { COMBAT } from '../../src/config/combat';
 
 const DT = 1 / 60;
 const run = (f: Fighter, seconds: number) => { for (let t = 0; t < seconds - 1e-9; t += DT) f.tick(DT); };
@@ -96,6 +97,30 @@ describe('Fighter hits', () => {
     f.setStun(0.35);
     expect(f.stunned).toBe(true);
     run(f, 0.4);
+    expect(f.stunned).toBe(false);
+  });
+});
+
+describe('Fighter substitution gauge', () => {
+  it('spends a cost, refuses when low and regenerates while alive', () => {
+    const f = make();
+    const s = COMBAT.substitution;
+    expect(f.substitution).toBe(s.max);
+    while (f.trySpendSubstitution());
+    expect(f.substitution).toBeLessThan(s.cost);
+    const before = f.substitution;
+    run(f, 1);
+    expect(f.substitution).toBeCloseTo(before + s.regenPerSecond, 1);
+    f.applyHit({ damage: 1000 });
+    const dead = f.substitution;
+    run(f, 1);
+    expect(f.substitution).toBe(dead);
+  });
+
+  it('clearStun ends stun immediately', () => {
+    const f = make();
+    f.setStun(1);
+    f.clearStun();
     expect(f.stunned).toBe(false);
   });
 });

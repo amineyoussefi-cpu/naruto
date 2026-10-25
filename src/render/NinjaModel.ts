@@ -62,6 +62,12 @@ const ANIM = {
   flashStrength: 1.2, telegraphStrength: 0.9,
   /** Scarf / headband cloth: max trail angle (rad) reached at `clothSpeed` m/s. */
   clothTrail: 1.0, clothSpeed: 12,
+  /** Chakra-dash lean (rad, ~60°: split between whole-body pitch and torso) and lean-in time (s). */
+  dashBodyPitch: 0.62, dashTorsoPitch: 0.42, dashLeanIn: 0.06,
+  /** Launched tumble: backward spin rate (rad/s) and limb flail rate (rad/s). */
+  launchSpin: 7.5, launchFlail: 15,
+  /** Substitution reappear: rise from the crouched seal over this time (s). */
+  substitutionRise: 0.35,
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -69,9 +75,12 @@ const smooth = (x: number) => { const c = clamp01(x); return c * c * (3 - 2 * c)
 /** Ease-out with overshoot: snappy strike that slightly passes its target (follow-through). */
 const backOut = (x: number) => { const c = clamp01(x) - 1; return 1 + 2.7 * c * c * c + 1.7 * c * c; };
 const TAU = Math.PI * 2;
+const mix = (a: number, b: number, k: number) => a + (b - a) * k;
+/** Combo hit timings; falls back to the last configured hit if the config has fewer entries. */
+const comboHit = (i: number) => COMBAT.combo[Math.min(i, COMBAT.combo.length - 1)];
 
 /** One-shot states snap faster to their pose. */
-const ACTION_STATES = new Set<AnimState>(['attack1', 'attack2', 'attack3', 'throw', 'special', 'dodge', 'hit', 'telegraph', 'guard']);
+const ACTION_STATES = new Set<AnimState>(['attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'dodge', 'hit', 'telegraph', 'guard', 'dash', 'launched', 'substitution']);
 
 /** Fills `out` with the target pose. `phase` = locomotion cycle, `time` = free-running clock. */
 export function computePose(anim: AnimState, t: number, phase: number, time: number, speed: number, out: Float32Array): Float32Array {
@@ -184,6 +193,64 @@ export function computePose(anim: AnimState, t: number, phase: number, time: num
       out[P.torsoRoll] = -0.45 * p; out[P.bodyRoll] = -0.15 * p;
       out[P.lShZ] = out[P.rShZ] = 0.3 + 0.9 * p; out[P.lEl] = out[P.rEl] = 0.6;
       out[P.bodyY] = 0.06 * p - 0.05;
+      break;
+    }
+    case 'attack4': { // flying knee: crouch, hop up driving the right knee forward, hands clinching
+      const c = comboHit(3);
+      const wind = t < c.windup ? smooth(t / c.windup) : 1 - smooth((t - c.windup) / 0.06);
+      const p = t < c.windup ? 0 : t < c.windup + c.active ? backOut((t - c.windup) / (c.active * 0.6)) : 1 - smooth((t - c.windup - c.active) / c.recovery);
+      fightStance();
+      out[P.bodyY] = -0.14 * wind + 0.32 * p;
+      out[P.bodyPitch] = -0.12 * wind + 0.08 * p;
+      out[P.rHipX] = 0.3 * wind - 1.95 * p; out[P.rKnee] = 0.4 * wind + 2.1 * p; out[P.rHipZ] = 0.05;
+      out[P.lHipX] = mix(-0.45, 0.45, p); out[P.lKnee] = mix(0.45 + 0.4 * wind, 0.7, p);
+      out[P.lShX] = out[P.rShX] = -0.3 * wind - 1.55 * p; out[P.lShZ] = out[P.rShZ] = 0.35 * wind - 0.3 * p;
+      out[P.lEl] = out[P.rEl] = 1.0 + 0.3 * p;
+      out[P.torsoPitch] = 0.1 + 0.3 * p; out[P.torsoTwist] = 0.25 * wind - 0.2 * p; out[P.headPitch] = -0.15 * p;
+      break;
+    }
+    case 'attack5': { // launcher: deep crouch, then a rising two-hand palm strike lifting the whole body
+      const c = comboHit(4);
+      const crouch = t < c.windup ? smooth(t / c.windup) : 1 - smooth((t - c.windup) / 0.05);
+      const p = t < c.windup ? 0 : t < c.windup + c.active ? backOut((t - c.windup) / (c.active * 0.6)) : 1 - 0.6 * smooth((t - c.windup - c.active) / c.recovery);
+      out[P.bodyY] = -0.32 * crouch + 0.4 * p;
+      out[P.lHipX] = -0.9 * crouch - 0.15 * p; out[P.lKnee] = 1.4 * crouch + 0.05 * p;
+      out[P.rHipX] = 0.2 * crouch + 0.55 * p; out[P.rKnee] = 1.3 * crouch + 0.65 * p;
+      out[P.lHipZ] = out[P.rHipZ] = 0.3 * crouch;
+      out[P.lShX] = out[P.rShX] = 0.45 * crouch - 2.85 * p; out[P.lShZ] = out[P.rShZ] = 0.2 * crouch - 0.2 * p;
+      out[P.lEl] = out[P.rEl] = 1.7 * crouch + 0.12 * p;
+      out[P.torsoPitch] = 0.5 * crouch - 0.35 * p; out[P.headPitch] = 0.1 * crouch - 0.45 * p;
+      out[P.torsoTwist] = -0.2 * crouch;
+      break;
+    }
+    case 'dash': { // chakra dash: ~60° lean, arms swept back, legs stretched in a glide
+      const k = backOut(t / ANIM.dashLeanIn);
+      const w = Math.sin(time * 30) * 0.04; // wind flutter
+      out[P.bodyPitch] = ANIM.dashBodyPitch * k; out[P.torsoPitch] = ANIM.dashTorsoPitch * k; out[P.headPitch] = -0.75 * k;
+      out[P.bodyY] = -0.1 * k;
+      out[P.lShX] = 0.8 * k + w; out[P.rShX] = 0.85 * k - w; out[P.lShZ] = out[P.rShZ] = 0.28; out[P.lEl] = out[P.rEl] = 0.05;
+      out[P.lHipX] = -0.25 * k; out[P.lKnee] = 0.35; out[P.rHipX] = 0.7 * k; out[P.rKnee] = 0.2 + w;
+      break;
+    }
+    case 'launched': { // airborne tumble: spins backward (direct-driven channel), limbs flailing
+      const f = time * ANIM.launchFlail;
+      out[P.bodyPitch] = -ANIM.launchSpin * t;
+      out[P.bodyY] = 0.1;
+      out[P.torsoPitch] = -0.35; out[P.headPitch] = -0.4;
+      out[P.lShZ] = 1.3 + 0.35 * Math.sin(f); out[P.rShZ] = 1.3 + 0.35 * Math.sin(f + 2); out[P.lShX] = -0.6; out[P.rShX] = 0.4;
+      out[P.lEl] = 0.5 + 0.3 * Math.sin(f + 1); out[P.rEl] = 0.5;
+      out[P.lHipX] = -0.7 + 0.35 * Math.sin(f + 0.5); out[P.rHipX] = 0.2 - 0.35 * Math.sin(f + 0.5);
+      out[P.lKnee] = 0.9; out[P.rKnee] = 0.4; out[P.lHipZ] = out[P.rHipZ] = 0.25;
+      break;
+    }
+    case 'substitution': { // reappears kneeling in a hand seal, then springs up
+      const rise = smooth(t / ANIM.substitutionRise);
+      const low = 1 - rise;
+      out[P.bodyY] = -0.42 * low - 0.06;
+      out[P.lHipX] = -1.25 * low - 0.3 * rise; out[P.lKnee] = 1.9 * low + 0.35 * rise;
+      out[P.rHipX] = 0.25 * low + 0.25 * rise; out[P.rKnee] = 1.7 * low + 0.3 * rise; out[P.rHipZ] = 0.2;
+      out[P.lShX] = out[P.rShX] = -1.2; out[P.lShZ] = out[P.rShZ] = -0.45; out[P.lEl] = out[P.rEl] = 1.75;
+      out[P.torsoPitch] = 0.3 * low + 0.1; out[P.torsoTwist] = 0.25; out[P.headPitch] = -0.1;
       break;
     }
     case 'throw': { // overhand kunai throw
@@ -746,7 +813,7 @@ export class NinjaModel {
     const rate = anim === 'dead' ? ANIM.blendDead : ACTION_STATES.has(anim) ? ANIM.blendAction : ANIM.blendLoop;
     const k = 1 - Math.exp(-rate * dt);
     // Full-turn channels (spin kick, roll) are driven directly, then wrapped so blending out never unwinds.
-    const direct = anim === 'attack3' ? CH.bodyYaw : anim === 'dodge' ? CH.bodyPitch : -1;
+    const direct = anim === 'attack3' ? CH.bodyYaw : anim === 'dodge' || anim === 'launched' ? CH.bodyPitch : -1;
     if (anim !== this.lastAnim) {
       this.pose[CH.bodyYaw] = Math.atan2(Math.sin(this.pose[CH.bodyYaw]), Math.cos(this.pose[CH.bodyYaw]));
       this.pose[CH.bodyPitch] = Math.atan2(Math.sin(this.pose[CH.bodyPitch]), Math.cos(this.pose[CH.bodyPitch]));

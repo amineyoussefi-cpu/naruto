@@ -33,9 +33,26 @@ export class AudioSystem {
     const on = this.events.on.bind(this.events);
     this.unsub.push(
       on('attackStart', (e) => this.attack(e.kind)),
-      on('damage', (e) => (e.blocked ? this.clang() : this.impact(e.killed || e.kind === 'combo3' || e.kind === 'special'))),
+      on('damage', (e) => {
+        if (e.blocked) this.clang();
+        else if (e.kind === 'combo5') this.launcher();
+        else this.impact(e.killed || e.kind === 'combo3' || e.kind === 'combo4' || e.kind === 'special');
+      }),
       on('technique', () => this.boom()),
-      on('jump', () => this.tone('sine', 280, 620, 0.12, 0.12)),
+      on('jump', (e) => {
+        if (!e.air) { this.tone('sine', 280, 620, 0.12, 0.12); return; }
+        this.noise(0.25, 0.22, 'bandpass', 900, 3200, 2); // airy rising swish
+        this.tone('sine', 520, 1100, 0.16, 0.08);
+      }),
+      on('chakraDash', (e) => {
+        this.noise(0.3, 0.32, 'bandpass', 3500, 700, 1.4); // falling whoosh
+        this.tone('sawtooth', 220, e.homing ? 520 : 380, 0.22, 0.05, 0, 0.01, 1600); // chakra surge
+      }),
+      on('substitution', () => {
+        this.noise(0.35, 0.3, 'lowpass', 1800, 200); // smoke poof
+        this.tone('triangle', 620, 560, 0.09, 0.3, 0.06, 0.002, 2500); // wooden "tok"
+        this.tone('sine', 310, 280, 0.12, 0.2, 0.06, 0.002);
+      }),
       on('land', (e) => this.noise(0.12, Math.min(0.1 + e.impact * 0.02, 0.45), 'lowpass', 500, 120)),
       on('footstep', (e) => this.noise(0.05, AUDIO.footstepGain * (e.sprint ? 1.4 : 1), 'lowpass', 900, 300)),
       on('dodge', () => this.noise(0.22, 0.25, 'bandpass', 2400, 500, 1.5)),
@@ -118,7 +135,7 @@ export class AudioSystem {
       this.tone('sawtooth', 180, 900, 0.5, 0.08, 0, 0.05, 1800);
       this.noise(0.5, 0.18, 'bandpass', 400, 3000, 3);
     } else {
-      const heavy = kind === 'combo3';
+      const heavy = kind === 'combo3' || kind === 'combo4' || kind === 'combo5';
       this.noise(heavy ? 0.22 : 0.14, heavy ? 0.35 : 0.25, 'bandpass', 600, heavy ? 2000 : 2600, 1.2);
     }
   }
@@ -126,6 +143,13 @@ export class AudioSystem {
   private impact(heavy: boolean): void {
     this.tone('sine', heavy ? 140 : 180, 45, heavy ? 0.25 : 0.14, heavy ? 0.55 : 0.4);
     this.noise(heavy ? 0.14 : 0.08, heavy ? 0.4 : 0.3, 'lowpass', 2200, 300);
+  }
+
+  /** Launcher finisher: deep thump plus a rising swoosh as the enemy flies. */
+  private launcher(): void {
+    this.impact(true);
+    this.tone('sine', 90, 40, 0.4, 0.5);
+    this.noise(0.35, 0.25, 'bandpass', 500, 3000, 1.2, 0.04);
   }
 
   private clang(): void {

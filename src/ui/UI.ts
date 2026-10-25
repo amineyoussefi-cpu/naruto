@@ -6,9 +6,10 @@ import { browserStorage, loadSettings, sanitizeSettings, saveSettings } from './
 type Overlay = 'controls' | 'settings' | null;
 
 const COMMANDS: [keyof GameApi['keyLabels'] | 'move', string][] = [
-  ['move', 'Se déplacer'], ['sprint', 'Sprinter'], ['jump', 'Sauter (contre un mur : grimper)'],
-  ['attack', 'Attaque (enchaînez jusqu’à 3 coups)'], ['guard', 'Garde'], ['special', 'Rasengan (chakra)'],
-  ['kunai', 'Lancer un kunaï'], ['concentrate', 'Concentrer le chakra'], ['dodge', 'Esquive'],
+  ['move', 'Se déplacer'], ['sprint', 'Appui : ruée de chakra vers la cible · maintenu : course ninja'],
+  ['jump', 'Sauter, double saut en l’air (contre un mur : marcher dessus)'],
+  ['attack', 'Combo de 5 coups à tête chercheuse (le dernier projette l’ennemi)'], ['guard', 'Garde'], ['special', 'Rasengan (chakra)'],
+  ['kunai', 'Lancer un kunaï'], ['concentrate', 'Concentrer le chakra'], ['dodge', 'Esquive · quand vous êtes touché : permutation'],
   ['lockOn', 'Verrouiller une cible'], ['switchTarget', 'Changer de cible'], ['pause', 'Pause'],
 ];
 
@@ -220,6 +221,9 @@ export class UI {
     this.style('hud-chakra-fill', 'transform', `scaleX(${pct(p.chakra, p.maxChakra).toFixed(3)})`);
     this.text('hud-chakra-val', `${Math.floor(p.chakra)} / ${p.maxChakra}`);
     this.el['hud-chakra'].classList.toggle('charging', p.concentrating);
+    // Substitution gauge: 4 pips, each one use.
+    const pips = (p.substitution / p.maxSubstitution) * 4;
+    for (let i = 0; i < 4; i++) this.style(`hud-sub-${i}`, 'transform', `scaleX(${Math.min(1, Math.max(0, pips - i)).toFixed(2)})`);
     const status = p.concentrating ? 'Concentration du chakra…' : p.guarding ? 'Garde' : p.climbing ? 'Escalade' : '';
     this.text('hud-status', status);
     this.setHidden('hud-status', !status);
@@ -429,6 +433,7 @@ const TEMPLATE = /* html */ `
   <div id="hud-player">
     <div id="hud-hp" class="bar big"><div id="hud-hp-trail" class="trail"></div><div id="hud-hp-fill" class="fill"></div><span id="hud-hp-val" class="val"></span></div>
     <div id="hud-chakra" class="bar big"><div id="hud-chakra-fill" class="fill"></div><span id="hud-chakra-val" class="val"></span></div>
+    <div id="hud-sub" title="Permutation (C quand vous êtes touché)"><span class="sub-label">Permutation</span>${[0, 1, 2, 3].map((i) => `<span class="sub-pip"><span id="hud-sub-${i}" class="sub-fill"></span></span>`).join('')}</div>
     <div id="hud-chakra-msg" hidden>Chakra insuffisant</div>
     <div id="hud-status" hidden></div>
   </div>

@@ -11,7 +11,7 @@ import type { AnimState } from '../../src/core/types';
 import { LOOKS, pickEnemyLook } from '../../src/render/looks';
 import type { Actor } from '../../src/game/Actor';
 
-const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph'];
+const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph', 'dash', 'launched', 'substitution'];
 
 describe('NinjaModel poses', () => {
   it('gives every AnimState a distinct pose', () => {
@@ -71,6 +71,28 @@ describe('Effects', () => {
     fx.clear();
     fx.update(1 / 60);
     expect(fx.liveParticles).toBe(0);
+    fx.dispose();
+  });
+
+  it('handles Storm events: dash trail, substitution log, air jump, launcher', () => {
+    const events = new EventBus();
+    const actor = { position: new THREE.Vector3(), velocity: new THREE.Vector3(0, 0, 20), yaw: 0, anim: 'dash', alive: true, height: 1.8, fighter: { concentrating: false } } as unknown as Actor;
+    const scene = new THREE.Scene();
+    const fx = new Effects(scene, events, (id) => (id === 1 ? actor : undefined));
+    events.emit('chakraDash', { id: 1, homing: true });
+    events.emit('substitution', { id: 1, from: { x: 0, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } });
+    events.emit('jump', { id: 1, air: true });
+    events.emit('damage', { targetId: 1, sourceId: 2, amount: 5, blocked: false, killed: false, kind: 'combo5', position: { x: 0, y: 1, z: 0 } });
+    for (let i = 0; i < 10; i++) fx.update(1 / 60);
+    const log = scene.children.find((o) => (o as THREE.Mesh).isMesh && Array.isArray((o as THREE.Mesh).material) && o.visible);
+    expect(log, 'log visible').toBeDefined();
+    const live = fx.liveParticles;
+    expect(live).toBeGreaterThan(100);
+    actor.anim = 'idle';
+    for (let i = 0; i < 120; i++) fx.update(1 / 60);
+    expect(fx.liveParticles).toBe(0);
+    expect(log!.visible).toBe(false);
+    expect(log!.position.y).toBeGreaterThan(0); // rests on the ground, not under it
     fx.dispose();
   });
 });
