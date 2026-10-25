@@ -4,8 +4,10 @@ import type { AnimState } from '../core/types';
 import { COMBAT } from '../config/combat';
 import { toon } from './toon';
 import { glowMaterial } from './PostFX';
+import { boltGeometry } from './fx/shapes';
+import { heroDecalMaterial, heroParts, heroSurfaceParams, isHeroDecal, type HeroPartName, type HeroParts } from './heroAsset';
 
-export type HairStyle = 'spiky' | 'swept' | 'topknot' | 'long';
+export type HairStyle = 'spiky' | 'swept' | 'topknot' | 'long' | 'duckTail' | 'leaning';
 
 export interface NinjaLook {
   /** Main outfit colour (jacket, trousers). */
@@ -27,6 +29,24 @@ export interface NinjaLook {
   scarf?: number;
   /** Shoulder mantle / short cloak colour (none when omitted). */
   cloak?: number;
+  /** 'hero': use the Blender model (public/models/hero.glb) instead of the procedural body, when loaded. */
+  model?: 'hero';
+  /** Trousers + sandals colour (default `outfit` / `accent`). */
+  pants?: number;
+  /** Chest colour (default `outfit`), e.g. a flak vest over the sleeves. */
+  vest?: number;
+  /** Belt / sash colour (default `accent`). */
+  belt?: number;
+  /** Mask colour (default dark slate). */
+  maskColor?: number;
+  /** Forearms covered by the outfit colour instead of bare skin. */
+  longSleeves?: boolean;
+  /** Three ink whisker marks on each cheek. */
+  whiskers?: boolean;
+  /** Headband slanted over the left eye: roll (rad, < 0 drops the left side), forward pitch (rad), drop (m). */
+  bandTilt?: { roll: number; pitch: number; drop: number };
+  /** Draw the small wave mark on the headband plate (default true). */
+  plateMark?: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -68,6 +88,18 @@ const ANIM = {
   launchSpin: 7.5, launchFlail: 15,
   /** Substitution reappear: rise from the crouched seal over this time (s). */
   substitutionRise: 0.35,
+  /** Charge pose: tremble amplitude (rad) reached after `chargeShakeTime` seconds of holding. */
+  chargeShake: 0.035, chargeShakeTime: 1.5,
+  /** Chidori dash leg cycle rate (rad/s). */
+  chidoriStride: 22,
+  /** Grab strikes: wind-up and snap times (s). */
+  strikeWind: 0.05, strikeSnap: 0.08,
+  /** Hand orb: scale at charge 0 / 1, swirl speed multiplier at charge 0 / 1, lightning re-roll interval (s). */
+  orbMin: 0.55, orbMax: 1.3, swirlMin: 0.5, swirlMax: 2.2, boltFlicker: 0.05,
+  /** Chidori ground arcs appear above this charge. */
+  arcCharge: 0.6,
+  /** Daze ring spin (rad/s) and height above the head centre (m). */
+  dazeSpin: 4, dazeHeight: 0.3,
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -78,9 +110,15 @@ const TAU = Math.PI * 2;
 const mix = (a: number, b: number, k: number) => a + (b - a) * k;
 /** Combo hit timings; falls back to the last configured hit if the config has fewer entries. */
 const comboHit = (i: number) => COMBAT.combo[Math.min(i, COMBAT.combo.length - 1)];
+/** Grab strike curve: `wind` pull-back 0→1→0, `p` snap with overshoot, held at the end. */
+const strike = (t: number) => ({
+  wind: t < ANIM.strikeWind ? smooth(t / ANIM.strikeWind) : 1 - smooth((t - ANIM.strikeWind) / 0.05),
+  p: t < ANIM.strikeWind ? 0 : backOut((t - ANIM.strikeWind) / ANIM.strikeSnap),
+});
 
 /** One-shot states snap faster to their pose. */
-const ACTION_STATES = new Set<AnimState>(['attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'dodge', 'hit', 'telegraph', 'guard', 'dash', 'launched', 'substitution']);
+const ACTION_STATES = new Set<AnimState>(['attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'dodge', 'hit', 'telegraph', 'guard', 'dash', 'launched', 'substitution',
+  'chidori', 'sharingan', 'strikeUp', 'strikeDown', 'strikeLeft', 'strikeRight', 'grabFinisher']);
 
 /** Fills `out` with the target pose. `phase` = locomotion cycle, `time` = free-running clock. */
 export function computePose(anim: AnimState, t: number, phase: number, time: number, speed: number, out: Float32Array): Float32Array {
@@ -326,6 +364,106 @@ export function computePose(anim: AnimState, t: number, phase: number, time: num
       out[P.headPitch] = 0.05;
       break;
     }
+    case 'charge': { // crouched, right hand low and forward gripping the orb, left hand cupping it; shake grows with time
+      const k = clamp01(t / ANIM.chargeShakeTime);
+      const sh = Math.sin(time * 47) * ANIM.chargeShake * k, sh2 = Math.sin(time * 61 + 1) * ANIM.chargeShake * k;
+      out[P.bodyY] = -0.3 - 0.06 * k + sh * 0.3;
+      out[P.lHipX] = -0.95; out[P.lKnee] = 1.35; out[P.rHipX] = 0.35; out[P.rKnee] = 1.05; out[P.lHipZ] = out[P.rHipZ] = 0.22;
+      out[P.torsoPitch] = 0.42 + sh; out[P.torsoTwist] = -0.25 + sh2; out[P.torsoRoll] = sh2;
+      out[P.headPitch] = -0.2;
+      out[P.rShX] = -0.55 + sh2; out[P.rShZ] = 0.05; out[P.rEl] = 0.55;
+      out[P.lShX] = -0.75 + sh; out[P.lShZ] = -0.45; out[P.lEl] = 1.2;
+      break;
+    }
+    case 'chidori': { // lunge dash: low forward lean, lightning arm thrust ahead, left arm trailing, fast stride
+      const k = backOut(t / ANIM.dashLeanIn);
+      const s = Math.sin(time * ANIM.chidoriStride);
+      out[P.bodyPitch] = 0.45 * k; out[P.torsoPitch] = 0.35 * k; out[P.headPitch] = -0.6 * k;
+      out[P.bodyY] = -0.16 * k; out[P.torsoTwist] = 0.35 * k;
+      out[P.rShX] = -1.45 * k; out[P.rShZ] = 0.05; out[P.rEl] = 0.08;
+      out[P.lShX] = 1.0 * k; out[P.lShZ] = 0.35; out[P.lEl] = 0.3;
+      out[P.lHipX] = -0.9 * s - 0.3; out[P.rHipX] = 0.9 * s + 0.2;
+      out[P.lKnee] = 0.5 + 0.7 * (0.5 + 0.5 * s); out[P.rKnee] = 0.5 + 0.7 * (0.5 - 0.5 * s);
+      break;
+    }
+    case 'sharingan': { // two fingers raised to the eye, wide braced stance
+      const q = smooth(t / 0.15);
+      out[P.bodyY] = -0.1 * q;
+      out[P.lHipX] = -0.35; out[P.lKnee] = 0.4; out[P.rHipX] = 0.3; out[P.rKnee] = 0.35; out[P.lHipZ] = out[P.rHipZ] = 0.22;
+      out[P.rShX] = -1.75 * q; out[P.rShZ] = -0.35 * q; out[P.rEl] = 2.35 * q;
+      out[P.lShX] = 0.25; out[P.lShZ] = 0.4; out[P.lEl] = 0.35;
+      out[P.torsoTwist] = 0.2 * q; out[P.headPitch] = 0.12 * q; out[P.headYaw] = -0.15 * q;
+      break;
+    }
+    case 'dazed': { // genjutsu: wobbly, unsteady, head lolling, arms hanging loose
+      const a = Math.sin(time * 2.1), b = Math.sin(time * 1.4 + 1), c = Math.sin(time * 3.3);
+      out[P.bodyRoll] = 0.12 * a; out[P.bodyYaw] = 0.2 * b; out[P.bodyY] = -0.08 + 0.03 * c;
+      out[P.torsoRoll] = -0.18 * a; out[P.torsoPitch] = 0.15 + 0.08 * b;
+      out[P.headPitch] = 0.35 + 0.2 * c; out[P.headYaw] = 0.4 * b;
+      out[P.lShZ] = 0.08 + 0.1 * a; out[P.rShZ] = 0.08 - 0.1 * a; out[P.lShX] = 0.15 * b; out[P.rShX] = -0.15 * b; out[P.lEl] = out[P.rEl] = 0.15;
+      out[P.lKnee] = 0.3 + 0.2 * Math.max(0, a); out[P.rKnee] = 0.3 + 0.2 * Math.max(0, -a);
+      out[P.lHipZ] = 0.12 - 0.08 * a; out[P.rHipZ] = 0.12 + 0.08 * a;
+      break;
+    }
+    case 'grabHold': { // clinch: both hands forward at chest height holding the enemy
+      fightStance();
+      out[P.lShX] = out[P.rShX] = -1.4; out[P.lShZ] = out[P.rShZ] = -0.3; out[P.lEl] = out[P.rEl] = 0.9;
+      out[P.torsoPitch] = 0.22 + Math.sin(time * 5) * 0.02; out[P.headPitch] = 0.05;
+      break;
+    }
+    case 'strikeUp': { // uppercut (right)
+      const { wind, p } = strike(t);
+      fightStance();
+      out[P.bodyY] = -0.18 * wind + 0.1 * p;
+      out[P.rShX] = 0.4 * wind - 2.7 * p; out[P.rShZ] = 0.1; out[P.rEl] = 1.9 - 1.2 * p;
+      out[P.lShX] = -1.1; out[P.lShZ] = 0.15; out[P.lEl] = 2.0;
+      out[P.torsoPitch] = 0.3 * wind - 0.3 * p; out[P.torsoTwist] = -0.3 * wind + 0.4 * p; out[P.headPitch] = -0.25 * p;
+      break;
+    }
+    case 'strikeDown': { // axe kick: right leg swung high, then chopped down
+      const lift = smooth(t / 0.1), drop = smooth((t - 0.11) / 0.07);
+      out[P.rHipX] = -2.2 * lift * (1 - drop) - 0.75 * drop; out[P.rKnee] = 0.1 + 0.3 * drop;
+      out[P.lKnee] = 0.3; out[P.lHipX] = 0.15;
+      out[P.torsoPitch] = -0.3 * lift * (1 - drop) + 0.4 * drop; out[P.headPitch] = 0.2 * drop;
+      out[P.lShX] = out[P.rShX] = 0.5 * lift; out[P.lShZ] = out[P.rShZ] = 0.6; out[P.lEl] = out[P.rEl] = 0.5;
+      out[P.bodyY] = -0.12 * drop;
+      break;
+    }
+    case 'strikeLeft': { // wide left hook sweeping across
+      const { wind, p } = strike(t);
+      fightStance();
+      out[P.lShX] = -1.3; out[P.lShZ] = 1.3 + 0.3 * wind - 1.9 * p; out[P.lEl] = 1.1;
+      out[P.rShX] = -1.0; out[P.rShZ] = 0.2; out[P.rEl] = 2.0;
+      out[P.torsoTwist] = 0.6 * wind - 1.0 * p; out[P.torsoRoll] = 0.2 * p; out[P.bodyY] -= 0.06 * p;
+      break;
+    }
+    case 'strikeRight': { // right side kick
+      const { wind, p } = strike(t);
+      out[P.rHipZ] = 0.3 * wind + 1.45 * p; out[P.rHipX] = -0.35 * p; out[P.rKnee] = 1.3 * wind + 0.15 * (1 - wind) * (1 - p);
+      out[P.lKnee] = 0.35; out[P.lHipZ] = 0.1;
+      out[P.bodyRoll] = 0.3 * p; out[P.torsoRoll] = 0.25 * p; out[P.torsoTwist] = -0.3 * p;
+      out[P.lShZ] = 0.9; out[P.rShZ] = 0.5; out[P.lEl] = out[P.rEl] = 1.2; out[P.lShX] = out[P.rShX] = -0.5;
+      break;
+    }
+    case 'grabFinisher': { // big launcher: deep crouch, then a rising flip kick sending the enemy skyward
+      const crouch = t < 0.12 ? smooth(t / 0.12) : 1 - smooth((t - 0.12) / 0.06);
+      const p = t < 0.12 ? 0 : backOut((t - 0.12) / 0.12);
+      out[P.bodyY] = -0.38 * crouch + 0.45 * p;
+      out[P.bodyPitch] = -0.45 * p;
+      out[P.lHipX] = -0.9 * crouch + 0.3 * p; out[P.lKnee] = 1.5 * crouch + 0.4 * p;
+      out[P.rHipX] = 0.2 * crouch - 2.6 * p; out[P.rKnee] = 1.3 * crouch + 0.05 * p;
+      out[P.lShX] = out[P.rShX] = 0.5 * crouch + 0.9 * p; out[P.lShZ] = out[P.rShZ] = 0.3 + 0.5 * p; out[P.lEl] = out[P.rEl] = 1.0 * crouch + 0.2;
+      out[P.torsoPitch] = 0.45 * crouch - 0.3 * p; out[P.headPitch] = -0.3 * p;
+      break;
+    }
+    case 'grabbed': { // victim: limp, slightly lifted, arms loose, head hanging
+      const w = Math.sin(time * 3) * 0.05;
+      out[P.bodyY] = 0.14; out[P.bodyPitch] = -0.12; out[P.bodyRoll] = w;
+      out[P.torsoPitch] = -0.2; out[P.headPitch] = 0.6 + w; out[P.headYaw] = 0.2;
+      out[P.lShX] = out[P.rShX] = 0.25; out[P.lShZ] = 0.05 + w; out[P.rShZ] = 0.05 - w; out[P.lEl] = out[P.rEl] = 0.1;
+      out[P.lHipX] = 0.15; out[P.rHipX] = -0.1; out[P.lKnee] = 0.55; out[P.rKnee] = 0.7;
+      break;
+    }
   }
   return out;
 }
@@ -345,6 +483,8 @@ function merge(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
 }
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 const UP = v3(0, 1, 0);
+const tmpHand = new THREE.Vector3();
+const tmpDir = new THREE.Vector3();
 
 /** Tapered limb hanging down from its joint (y = 0 → -len), rounded ends. */
 function limb(rTop: number, rBot: number, len: number): THREE.BufferGeometry {
@@ -412,7 +552,7 @@ function buildIris(): THREE.BufferGeometry {
   return merge(parts);
 }
 /** Ink-coloured face details: pupils, upper lash lines, brows, mouth (unmasked only), headband-plate mark. */
-function buildFaceInk(withMouth: boolean): THREE.BufferGeometry {
+function buildFaceInk(withMouth: boolean, whiskers = false, mark = true): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const box = (w: number, h: number, x: number, y: number, lift: number, rot: number) =>
     parts.push(decal(new THREE.BoxGeometry(w, h, 0.002), x, y, faceZ(x, y, lift), rot));
@@ -424,8 +564,9 @@ function buildFaceInk(withMouth: boolean): THREE.BufferGeometry {
     box(0.042, 0.009, (EYE.x + 0.004) * s, EYE.y + 0.048, 0.003, -0.22 * s); // brow, angled (determined look)
   }
   if (withMouth) box(0.028, 0.005, 0, -0.085, 0.002, 0);
+  if (whiskers) for (const s of [1, -1]) for (let i = 0; i < 3; i++) box(0.042, 0.005, 0.095 * s, -0.04 - i * 0.016, 0.002, (0.12 - i * 0.12) * s);
   // Original headband mark: a single horizontal wave of three tilted strokes on the plate.
-  for (let i = -1; i <= 1; i++) {
+  if (mark) for (let i = -1; i <= 1; i++) {
     const g = new THREE.BoxGeometry(0.03, 0.006, 0.004); g.rotateZ(i === 0 ? -0.5 : 0.5); g.translate(i * 0.024, 0.085, 0.188);
     parts.push(g);
   }
@@ -438,6 +579,13 @@ function buildHair(style: HairStyle): THREE.BufferGeometry {
   const back = new THREE.SphereGeometry(0.17, 12, 6, Math.PI * 1.1, Math.PI * 0.8, Math.PI * 0.4, Math.PI * 0.3); back.translate(0, 0.035, -0.01);
   const parts: THREE.BufferGeometry[] = [cap, back];
   const add = (x: number, y: number, z: number, len: number, r: number, from = 0.11) => parts.push(spike(v3(x, y, z), len, r, from));
+  /** Cone at head-local point (x, y, z) pointing along `dir` (locks that do not radiate from the centre). */
+  const lock = (x: number, y: number, z: number, dir: THREE.Vector3, len: number, r: number) => {
+    const g = new THREE.ConeGeometry(r, len, 5); g.translate(0, len / 2, 0);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, dir.normalize()));
+    g.translate(x, y, z);
+    parts.push(g);
+  };
   const bangs = (n: number, tilt: number) => {
     for (let i = 0; i < n; i++) {
       const x = (i - (n - 1) / 2) * 0.06;
@@ -469,6 +617,23 @@ function buildHair(style: HairStyle): THREE.BufferGeometry {
       bangs(3, 0);
       break;
     }
+    case 'duckTail': // swept back into a spiky tuft at the back, long bangs framing the face
+      for (const [x, y, z, len] of [[0, 0.45, -1, 0.3], [0.4, 0.35, -1, 0.27], [-0.4, 0.35, -1, 0.27], [0.2, 0.8, -0.8, 0.28], [-0.2, 0.8, -0.8, 0.28], [0, 0.1, -1, 0.26], [0.55, 0.6, -0.6, 0.22], [-0.55, 0.6, -0.6, 0.22]] as const) {
+        add(x, y, z, len, 0.085);
+      }
+      add(0, 1, -0.2, 0.14, 0.08);
+      for (const sx of [1, -1]) {
+        lock(0.118 * sx, 0.07, 0.11, v3(0.25 * sx, -1, 0.3), 0.21, 0.035);
+        lock(0.15 * sx, 0.05, 0.04, v3(0.2 * sx, -1, 0.1), 0.2, 0.04);
+      }
+      bangs(3, 0.1);
+      break;
+    case 'leaning': // tall spikes all swept up and to one side
+      for (const [x, y, z, len] of [[-0.35, 1, 0.15, 0.36], [-0.7, 0.85, -0.1, 0.34], [-0.15, 1, -0.45, 0.36], [-0.9, 0.5, 0.15, 0.27], [0.2, 1, -0.1, 0.3], [-0.5, 0.75, -0.65, 0.33], [0.3, 0.7, -0.55, 0.27], [-0.2, 0.55, -0.9, 0.27], [0.55, 0.7, 0.1, 0.22]] as const) {
+        add(x, y, z, len, 0.09);
+      }
+      bangs(3, 0.3);
+      break;
     case 'long': // flowing locks down the back and framing the face
       for (const x of [-0.5, -0.17, 0.17, 0.5]) add(x, -1, -0.45, 0.42, 0.085, 0.13);
       add(0.95, -1, 0.15, 0.3, 0.06, 0.13); add(-0.95, -1, 0.15, 0.3, 0.06, 0.13);
@@ -484,7 +649,7 @@ interface SharedGeo {
   scarf: THREE.BufferGeometry; mantle: THREE.BufferGeometry;
   thigh: THREE.BufferGeometry; pouch: THREE.BufferGeometry; shin: THREE.BufferGeometry; legWrap: THREE.BufferGeometry; sandal: THREE.BufferGeometry;
   upperArm: THREE.BufferGeometry; forearm: THREE.BufferGeometry; armWrap: THREE.BufferGeometry; fist: THREE.BufferGeometry; armGlow: THREE.BufferGeometry;
-  head: THREE.BufferGeometry; eyeWhite: THREE.BufferGeometry; iris: THREE.BufferGeometry; ink: THREE.BufferGeometry; inkMasked: THREE.BufferGeometry;
+  head: THREE.BufferGeometry; eyeWhite: THREE.BufferGeometry; iris: THREE.BufferGeometry; ink: Map<string, THREE.BufferGeometry>;
   band: THREE.BufferGeometry; plate: THREE.BufferGeometry; bandTail: THREE.BufferGeometry; mask: THREE.BufferGeometry;
   shell: THREE.BufferGeometry; orbCore: THREE.BufferGeometry; orbShell: THREE.BufferGeometry;
   footChakra: THREE.BufferGeometry;
@@ -535,8 +700,10 @@ function sharedGeo(): SharedGeo {
     shin: limb(0.078, 0.052, 0.36), legWrap: merge([...wraps, tabi]), sandal: merge([sole, sandalStrap, heel]),
     upperArm: merge([limb(0.078, 0.06, 0.25), cuff]), forearm: limb(0.058, 0.046, 0.2), armWrap: merge(armWraps),
     fist: merge([fist, thumb]), armGlow: merge([limb(0.078, 0.066, 0.2), glowFist]),
-    head: buildHead(), eyeWhite: buildEyeWhite(), iris: buildIris(), ink: buildFaceInk(true), inkMasked: buildFaceInk(false),
-    band, plate, bandTail, mask: new THREE.LatheGeometry(maskProfile, 20),
+    head: buildHead(), eyeWhite: buildEyeWhite(), iris: buildIris(), ink: new Map(),
+    band, plate, bandTail,
+    // Mask lathe + a bump that swallows the nose (the mask covers nose and mouth).
+    mask: merge([new THREE.LatheGeometry(maskProfile, 20), new THREE.SphereGeometry(0.03, 8, 6).scale(1, 0.85, 0.9).translate(0, -0.045, faceZ(0, -0.045, 0.006))]),
     shell: new THREE.SphereGeometry(1, 20, 14),
     orbCore: new THREE.SphereGeometry(0.1, 14, 10),
     orbShell: new THREE.SphereGeometry(0.17, 16, 10),
@@ -549,6 +716,43 @@ function sharedGeo(): SharedGeo {
   };
   return geo;
 }
+/** Face ink variant for a look (mouth unless masked, optional whiskers, optional plate mark), cached. */
+function faceInkGeo(look: NinjaLook): THREE.BufferGeometry {
+  const mouth = !look.mask, whiskers = !!look.whiskers && mouth, mark = look.plateMark ?? true;
+  const key = `${mouth}${whiskers}${mark}`;
+  const m = sharedGeo().ink;
+  let g = m.get(key);
+  if (!g) m.set(key, (g = buildFaceInk(mouth, whiskers, mark)));
+  return g;
+}
+
+/** Lazily built extras for player-only / status visuals (not part of every enemy's mesh budget). */
+let extra: { tomoe: THREE.BufferGeometry; daze: THREE.BufferGeometry; bolts: THREE.BufferGeometry[]; arcs: THREE.BufferGeometry[]; sharingan: THREE.MeshBasicMaterial; dazeMat: THREE.MeshBasicMaterial; bolt: THREE.MeshBasicMaterial } | null = null;
+function extras(): NonNullable<typeof extra> {
+  if (extra) return extra;
+  // Sharingan: three dots circling each pupil.
+  const dots: THREE.BufferGeometry[] = [];
+  for (const s of [1, -1]) for (let k = 0; k < 3; k++) {
+    const a = k * (TAU / 3) + 0.4;
+    const x = (EYE.x - 0.004) * s + Math.cos(a) * 0.0095, y = EYE.y - 0.002 + Math.sin(a) * 0.012;
+    dots.push(decal(new THREE.CircleGeometry(0.0036, 6), x, y, faceZ(x, EYE.y, 0.006)));
+  }
+  // Daze halo: thin ring with three little stars riding on it (head-local, above the head).
+  const ring = new THREE.TorusGeometry(0.17, 0.012, 4, 24).rotateX(Math.PI / 2);
+  const stars = [0, 1, 2].map((k) => new THREE.OctahedronGeometry(0.04, 0).translate(Math.cos(k * TAU / 3) * 0.17, 0, Math.sin(k * TAU / 3) * 0.17));
+  const add = { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide } as const;
+  extra = {
+    tomoe: merge(dots),
+    daze: merge([ring, ...stars]),
+    bolts: [0, 1, 2, 3, 4, 5].map((i) => boltGeometry(i + 1, 5, 6, 1, 0.04)),
+    arcs: [0, 1, 2, 3].map((i) => boltGeometry(i + 50, 1, 8, 0.12, 0.05)),
+    sharingan: glowMaterial(0xff2a2a, 2.2),
+    dazeMat: glowMaterial(0xd8489a, 2),
+    bolt: glowMaterial(0xcfe8ff, 2.2, add),
+  };
+  return extra;
+}
+
 function hairGeo(style: HairStyle): THREE.BufferGeometry {
   const g = sharedGeo();
   return (g.hair[style] ??= buildHair(style));
@@ -659,6 +863,18 @@ export class NinjaModel {
   private auraOn = false;
   private auraLevel = 0;
   private lastAnim: AnimState = 'idle';
+  private orbCharge = 1;
+  private orbStyle: 'rasengan' | 'chidori' = 'rasengan';
+  /** Per-instance orb materials (cloned on first use so the glow can ramp with charge) and their base colours. */
+  private orbMats: { mat: THREE.MeshBasicMaterial; base: THREE.Color }[] | null = null;
+  private bolts: THREE.Mesh | null = null;
+  private arcs: THREE.Mesh | null = null;
+  private boltT = 0;
+  private daze: THREE.Mesh | null = null;
+  /** Procedural iris mesh (null for the Blender hero) and its normal material, swapped for the Sharingan. */
+  private iris: THREE.Mesh | null = null;
+  private irisMatBase: THREE.Material | null = null;
+  private tomoe: THREE.Mesh | null = null;
 
   constructor(readonly look: NinjaLook) {
     const g = sharedGeo();
@@ -666,6 +882,8 @@ export class NinjaModel {
     const ch = (color: number) => this.mat(toon(color, { rim: 0.6 }));
     const outfit = ch(look.outfit), accent = ch(look.accent), skin = ch(look.skin), hair = ch(look.hair), band = ch(look.headband);
     const armOutfit = ch(look.outfit), armSkin = ch(look.skin);
+    const pants = look.pants !== undefined ? ch(look.pants) : outfit;
+    const sandal = look.pants !== undefined ? pants : accent;
     this.armMats.push(armOutfit, armSkin);
 
     const mesh = (geometry: THREE.BufferGeometry, material: THREE.Material, parent: THREE.Object3D, shadow = true) => {
@@ -675,29 +893,43 @@ export class NinjaModel {
       return m;
     };
 
+    // Blender model: one rigid part per joint (falls back to the procedural body if the GLB failed to load).
+    const hero = look.model === 'hero' ? heroParts() : null;
+
     this.root.add(this.body);
     this.body.position.y = 0.95;
-    mesh(g.pelvis, outfit, this.body);
+    if (hero) this.heroPart(hero, 'pelvis', this.body);
+    else mesh(g.pelvis, pants, this.body);
     // Legs
     for (let i = 0; i < 2; i++) {
       const side = i === 0 ? 1 : -1; // left = +X
       const hip = this.hipsJ[i], knee = this.knees[i];
       hip.position.set(0.1 * side, -0.07, 0);
       this.body.add(hip);
-      mesh(g.thigh, outfit, hip);
-      if (i === 1) mesh(g.pouch, accent, hip, false);
       knee.position.y = -0.41;
       hip.add(knee);
-      mesh(g.shin, outfit, knee);
+      if (hero) {
+        const tag = i === 0 ? 'L' : 'R';
+        this.heroPart(hero, `thigh_${tag}`, hip);
+        this.heroPart(hero, `shin_${tag}`, knee);
+        continue;
+      }
+      mesh(g.thigh, pants, hip);
+      if (i === 1) mesh(g.pouch, accent, hip, false);
+      mesh(g.shin, pants, knee);
       mesh(g.legWrap, s.wrap, knee, false);
-      mesh(g.sandal, accent, knee, false);
+      mesh(g.sandal, sandal, knee, false);
     }
     // Torso
     this.torso.position.y = 0.04;
     this.body.add(this.torso);
-    mesh(g.chest, outfit, this.torso);
-    mesh(g.vest, accent, this.torso, false);
-    mesh(g.belt, accent, this.torso, false);
+    if (hero) {
+      this.heroPart(hero, 'torso', this.torso);
+    } else {
+      mesh(g.chest, look.vest !== undefined ? ch(look.vest) : outfit, this.torso);
+      mesh(g.vest, accent, this.torso, false);
+      mesh(g.belt, look.belt !== undefined ? ch(look.belt) : accent, this.torso, false);
+    }
     if (look.cloak !== undefined) {
       const cloak = ch(look.cloak);
       cloak.side = THREE.DoubleSide;
@@ -719,24 +951,36 @@ export class NinjaModel {
     // Head (centre at 0.15 above the neck joint)
     this.head.position.y = 0.48;
     this.torso.add(this.head);
-    const face = new THREE.Group();
-    face.position.y = 0.15;
-    this.head.add(face);
-    mesh(g.head, skin, face);
-    mesh(hairGeo(look.hairStyle ?? 'spiky'), hair, face);
-    mesh(g.eyeWhite, s.eyeWhite, face, false);
-    mesh(g.iris, irisMat(look.eyes ?? 0x2f7fe0), face, false);
-    mesh(look.mask ? g.inkMasked : g.ink, s.ink, face, false);
-    mesh(g.band, band, face, false);
-    mesh(g.plate, s.plate, face, false);
-    if (look.mask) mesh(g.mask, ch(0x34364a), face, false);
-    for (const x of [-0.04, 0.045]) {
-      const tail = new THREE.Group();
-      tail.position.set(x, 0.085, -0.165);
-      tail.rotation.z = x * 2;
-      face.add(tail);
-      mesh(g.bandTail, band, tail, false);
-      this.bandTails.push(tail);
+    if (hero) {
+      this.heroPart(hero, 'head', this.head);
+    } else {
+      const face = new THREE.Group();
+      face.position.y = 0.15;
+      this.head.add(face);
+      mesh(g.head, skin, face);
+      mesh(hairGeo(look.hairStyle ?? 'spiky'), hair, face);
+      mesh(g.eyeWhite, s.eyeWhite, face, false);
+      this.iris = mesh(g.iris, irisMat(look.eyes ?? 0x2f7fe0), face, false);
+      this.irisMatBase = this.iris.material as THREE.Material;
+      mesh(faceInkGeo(look), s.ink, face, false);
+      // Headband (optionally slanted over the left eye).
+      const bandG = new THREE.Group();
+      face.add(bandG);
+      if (look.bandTilt) {
+        bandG.rotation.set(look.bandTilt.pitch, 0, look.bandTilt.roll);
+        bandG.position.y = -look.bandTilt.drop;
+      }
+      mesh(g.band, band, bandG, false);
+      mesh(g.plate, s.plate, bandG, false);
+      if (look.mask) mesh(g.mask, ch(look.maskColor ?? 0x34364a), face, false);
+      for (const x of [-0.04, 0.045]) {
+        const tail = new THREE.Group();
+        tail.position.set(x, 0.085, -0.165);
+        tail.rotation.z = x * 2;
+        bandG.add(tail);
+        mesh(g.bandTail, band, tail, false);
+        this.bandTails.push(tail);
+      }
     }
     // Arms
     for (let i = 0; i < 2; i++) {
@@ -744,10 +988,16 @@ export class NinjaModel {
       const sh = this.shoulders[i], el = this.elbows[i];
       sh.position.set(0.27 * side, 0.4, 0);
       this.torso.add(sh);
-      mesh(g.upperArm, i === 1 ? armOutfit : outfit, sh);
       el.position.y = -0.27;
       sh.add(el);
-      mesh(g.forearm, i === 1 ? armSkin : skin, el);
+      if (hero) {
+        const tag = i === 0 ? 'L' : 'R';
+        this.heroPart(hero, `upperArm_${tag}`, sh, i === 1);
+        this.heroPart(hero, `forearm_${tag}`, el, i === 1);
+        continue;
+      }
+      mesh(g.upperArm, i === 1 ? armOutfit : outfit, sh);
+      mesh(g.forearm, look.longSleeves ? (i === 1 ? armOutfit : outfit) : i === 1 ? armSkin : skin, el);
       mesh(g.armWrap, s.wrap, el, false);
       mesh(g.fist, i === 1 ? armSkin : skin, el, false);
     }
@@ -802,6 +1052,21 @@ export class NinjaModel {
   private mat(m: THREE.MeshToonMaterial): THREE.MeshToonMaterial {
     this.mats.push(m);
     return m;
+  }
+
+  /** Attach one Blender part (joint-relative geometry, shared across instances) to its joint group as one mesh. */
+  private heroPart(parts: HeroParts, name: HeroPartName, joint: THREE.Object3D, weaponArm = false): void {
+    const part = parts.get(name);
+    if (!part) return;
+    const materials = part.prims.map((p) => {
+      if (isHeroDecal(p.material)) return heroDecalMaterial(p);
+      const m = this.mat(toon(p.color, { rim: 0.6, ...heroSurfaceParams(p.material) }));
+      if (weaponArm) this.armMats.push(m);
+      return m;
+    });
+    const m = new THREE.Mesh(part.geometry, materials);
+    m.castShadow = true;
+    joint.add(m);
   }
 
   /** `speed` is horizontal m/s; `animTime` seconds since the state started. */
@@ -867,13 +1132,48 @@ export class NinjaModel {
         f.scale.set(flick, 1, flick); // x/z only: scaling y would lift the pad off the sole
       });
     }
-    if (this.orb.visible) {
-      this.orbShells[0].rotation.y += dt * 13;
-      this.orbShells[1].rotation.x += dt * 10;
-      this.orbShells[2].rotation.z -= dt * 16;
-      this.orb.scale.setScalar(1 + 0.08 * Math.sin(this.clock * 30));
+    if (this.orb.visible) this.updateOrb(dt);
+    if (this.daze?.visible) {
+      this.daze.rotation.y += dt * ANIM.dazeSpin;
+      this.daze.rotation.z = Math.sin(this.clock * 2.5) * 0.15;
     }
     if (this.guardMesh.visible) this.guardMesh.scale.setScalar(0.95 + 0.03 * Math.sin(this.clock * 10));
+  }
+
+  /** Hand orb animation: size, swirl speed and glow follow the charge; Chidori re-rolls its bolts every few frames. */
+  private updateOrb(dt: number): void {
+    const k = this.orbCharge;
+    const size = mix(ANIM.orbMin, ANIM.orbMax, k);
+    const glow = mix(0.5, 1.3, k);
+    if (this.orbMats) for (const o of this.orbMats) o.mat.color.copy(o.base).multiplyScalar(glow);
+    if (this.orbStyle === 'rasengan') {
+      const sw = mix(ANIM.swirlMin, ANIM.swirlMax, k);
+      this.orbShells[0].rotation.y += dt * 13 * sw;
+      this.orbShells[1].rotation.x += dt * 10 * sw;
+      this.orbShells[2].rotation.z -= dt * 16 * sw;
+      this.orb.scale.setScalar(size * (1 + 0.08 * Math.sin(this.clock * 30)));
+      return;
+    }
+    // Chidori: flicker is render-only randomness.
+    this.boltT -= dt;
+    this.orb.scale.setScalar(size * (0.85 + 0.25 * Math.random()));
+    if (this.boltT > 0 || !this.bolts || !this.arcs) return;
+    this.boltT = ANIM.boltFlicker;
+    const x = extras();
+    this.bolts.geometry = x.bolts[Math.floor(Math.random() * x.bolts.length)];
+    this.bolts.rotation.set(Math.random() * TAU, Math.random() * TAU, Math.random() * TAU);
+    this.bolts.scale.setScalar(0.3 + 0.25 * k);
+    this.arcs.visible = k >= ANIM.arcCharge;
+    if (!this.arcs.visible) return;
+    // Arc from the hand to a random point on the ground near the feet (model space).
+    const hand = this.orb.getWorldPosition(tmpHand);
+    this.root.worldToLocal(hand);
+    const dir = tmpDir.set((Math.random() - 0.5) * 1.2 - hand.x * 0.3, -hand.y, 0.3 + Math.random() * 0.5 - hand.z * 0.3);
+    const len = dir.length();
+    this.arcs.geometry = x.arcs[Math.floor(Math.random() * x.arcs.length)];
+    this.arcs.position.copy(hand);
+    this.arcs.quaternion.setFromUnitVectors(UP, dir.multiplyScalar(1 / Math.max(len, 1e-3)));
+    this.arcs.scale.set(1, len, 1);
   }
 
   /**
@@ -923,25 +1223,69 @@ export class NinjaModel {
     this.auraOn = on;
     if (color !== undefined) (this.auraMat.uniforms.color.value as THREE.Color).setHex(color);
   }
-  /** Glowing chakra sphere in the right hand (Rasengan wind-up/dash). */
-  /** `charge` 0..1 scales size/brightness; `style` picks Rasengan (blue sphere) or Chidori (lightning). STUB params: visuals agent. */
-  setHandOrb(on: boolean, _charge = 1, _style: 'rasengan' | 'chidori' = 'rasengan'): void {
+  /** Glowing technique in the right hand. `charge` 0..1 scales size/brightness/speed; `style` = Rasengan sphere or Chidori lightning. */
+  setHandOrb(on: boolean, charge = 1, style: 'rasengan' | 'chidori' = 'rasengan'): void {
     this.orb.visible = on;
+    if (this.arcs && !on) this.arcs.visible = false;
+    if (!on) return;
+    this.orbCharge = clamp01(charge);
+    this.orbStyle = style;
+    if (!this.orbMats) {
+      this.orbMats = [];
+      for (const m of this.orb.children as THREE.Mesh[]) {
+        const mat = (m.material as THREE.MeshBasicMaterial).clone();
+        m.material = mat;
+        this.orbMats.push({ mat, base: mat.color.clone() });
+      }
+    }
+    const chidori = style === 'chidori';
+    for (const m of this.orbShells) m.visible = !chidori;
+    if (chidori && !this.bolts) {
+      const x = extras();
+      this.bolts = new THREE.Mesh(x.bolts[0], x.bolt);
+      this.bolts.renderOrder = 3;
+      this.orb.add(this.bolts);
+      this.arcs = new THREE.Mesh(x.arcs[0], x.bolt);
+      this.arcs.renderOrder = 3;
+      this.arcs.visible = false;
+      this.root.add(this.arcs);
+    }
+    if (this.bolts) this.bolts.visible = chidori;
+    if (this.arcs && !chidori) this.arcs.visible = false;
   }
   /** Blue chakra glow on both soles (wall-walking). */
   setFootChakra(on: boolean): void {
     for (const f of this.footChakra) f.visible = on;
   }
-  /** Genjutsu daze marker over the head (swirl). STUB: visuals agent. */
-  setDazed(_on: boolean): void {}
-  /** Sharingan eyes glow (red). STUB: visuals agent. */
-  setSharingan(_on: boolean): void {}
+  /** Genjutsu daze marker: spinning ring of stars over the head. Called every frame (cheap when unchanged). */
+  setDazed(on: boolean): void {
+    if (!this.daze) {
+      if (!on) return;
+      const x = extras();
+      this.daze = new THREE.Mesh(x.daze, x.dazeMat);
+      this.daze.position.y = 0.15 + ANIM.dazeHeight;
+      this.head.add(this.daze);
+    }
+    this.daze.visible = on;
+  }
+  /** Sharingan: glowing red irises with black marks around the pupils (procedural face only). */
+  setSharingan(on: boolean): void {
+    if (!this.iris || !this.irisMatBase) return;
+    const x = extras();
+    if (on && !this.tomoe) {
+      this.tomoe = new THREE.Mesh(x.tomoe, sharedMat().ink);
+      this.iris.parent!.add(this.tomoe);
+    }
+    this.iris.material = on ? x.sharingan : this.irisMatBase;
+    if (this.tomoe) this.tomoe.visible = on;
+  }
   /** Guard bubble/pose highlight. */
   setGuard(on: boolean): void {
     this.guardMesh.visible = on;
   }
   dispose(): void {
     for (const m of this.mats) m.dispose();
+    this.orbMats?.forEach((o) => o.mat.dispose());
     this.auraMat.dispose();
     this.root.removeFromParent();
   }

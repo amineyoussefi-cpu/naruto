@@ -9,10 +9,11 @@ import { buildArena } from '../../src/world/Arena';
 import { heightAt, WORLD } from '../../src/world/terrain';
 import { PhysicsWorld } from '../../src/physics/PhysicsWorld';
 import type { AnimState } from '../../src/core/types';
-import { LOOKS, pickEnemyLook } from '../../src/render/looks';
+import { CHARACTER_LOOKS, LOOKS, pickEnemyLook } from '../../src/render/looks';
 import type { Actor } from '../../src/game/Actor';
 
-const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph', 'dash', 'launched', 'substitution'];
+const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph', 'dash', 'launched', 'substitution',
+  'charge', 'chidori', 'sharingan', 'dazed', 'grabHold', 'strikeUp', 'strikeDown', 'strikeLeft', 'strikeRight', 'grabFinisher', 'grabbed'];
 
 describe('NinjaModel poses', () => {
   it('gives every AnimState a distinct pose', () => {
@@ -40,6 +41,13 @@ describe('NinjaModel poses', () => {
     scene.add(m.root);
     m.setTelegraph(true); m.setAura(true, 0xff0000); m.setHandOrb(true); m.setGuard(true); m.flash(0.1);
     for (const s of STATES) for (let i = 0; i < 20; i++) m.update(1 / 60, s, i / 60, 6);
+    // v4: charged orb styles, daze ring, Sharingan eyes.
+    m.setHandOrb(true, 0.2, 'chidori'); m.setDazed(true); m.setSharingan(true);
+    for (let i = 0; i < 20; i++) m.update(1 / 60, 'charge', i / 60, 0);
+    m.setHandOrb(true, 1, 'chidori');
+    for (let i = 0; i < 20; i++) m.update(1 / 60, 'charge', i / 60, 0);
+    m.setHandOrb(true, 0.5, 'rasengan'); m.setDazed(false); m.setSharingan(false);
+    m.update(1 / 60, 'charge', 1, 0);
     expect(Array.from(m.currentPose).every(Number.isFinite)).toBe(true);
     m.dispose();
     expect(m.root.parent).toBeNull();
@@ -49,6 +57,15 @@ describe('NinjaModel poses', () => {
     const looks = [LOOKS.player, LOOKS.melee, LOOKS.ranged, ...[0, 0.5, 0.99].flatMap((r) => [pickEnemyLook('melee', () => r), pickEnemyLook('ranged', () => r)])];
     for (const look of looks) {
       const m = new NinjaModel(look);
+      expect(m.meshCount).toBeLessThanOrEqual(45);
+      m.setDazed(true); // enemies can be dazed
+      expect(m.meshCount).toBeLessThanOrEqual(46);
+      m.dispose();
+    }
+    // Playable characters with every status visual created.
+    for (const look of Object.values(CHARACTER_LOOKS)) {
+      const m = new NinjaModel(look);
+      m.setHandOrb(true, 1, 'chidori'); m.setDazed(true); m.setSharingan(true);
       expect(m.meshCount).toBeLessThanOrEqual(45);
       m.dispose();
     }
@@ -98,6 +115,46 @@ describe('Effects', () => {
   });
 });
 
+describe('Effects v4', () => {
+  it('charges, Chidori, Sharingan and grab events spawn and clean up', () => {
+    const events = new EventBus();
+    const actor = { position: new THREE.Vector3(), velocity: new THREE.Vector3(0, 0, 30), yaw: 0, anim: 'charge', alive: true, height: 1.8, fighter: { concentrating: false } } as unknown as Actor;
+    const enemy = { position: new THREE.Vector3(0, 0, 3), velocity: new THREE.Vector3(), yaw: 0, anim: 'grabbed', alive: true, height: 1.8, fighter: { concentrating: false } } as unknown as Actor;
+    const scene = new THREE.Scene();
+    const fx = new Effects(scene, events, (id) => (id === 1 ? actor : id === 2 ? enemy : undefined));
+    const pos = { x: 0, y: 1, z: 0 };
+    events.emit('chargeStart', { id: 1, technique: 'chidori', fullTime: 0.5 });
+    for (let i = 0; i < 40; i++) fx.update(1 / 60);
+    expect(fx.liveParticles).toBeGreaterThan(20);
+    const bolts = () => scene.children.filter((o) => o.visible && o.renderOrder === 3).length;
+    expect(bolts(), 'crackling bolts while charging').toBeGreaterThan(0);
+    events.emit('chargeRelease', { id: 1, technique: 'chidori', power: 1 });
+    actor.anim = 'chidori';
+    events.emit('technique', { id: 1, name: 'chidori', position: pos, power: 1 });
+    events.emit('damage', { targetId: 2, sourceId: 1, amount: 50, blocked: false, killed: false, kind: 'chidori', position: pos });
+    for (let i = 0; i < 10; i++) fx.update(1 / 60);
+    expect(bolts()).toBeGreaterThan(0);
+    actor.anim = 'idle';
+    events.emit('technique', { id: 1, name: 'sharingan', position: pos });
+    events.emit('genjutsu', { id: 1, targets: [2], radius: 14, duration: 5 });
+    events.emit('technique', { id: 1, name: 'special', position: pos, power: 0.2 });
+    events.emit('grabStart', { id: 1, targetId: 2 });
+    events.emit('qteInput', { id: 1, dir: 'up', correct: true, index: 0 });
+    events.emit('qteInput', { id: 1, dir: 'left', correct: false, index: 1 });
+    events.emit('grabEnd', { id: 1, targetId: 2, result: 'complete', hits: 6 });
+    fx.update(1 / 60);
+    expect(fx.liveParticles).toBeGreaterThan(50);
+    for (let i = 0; i < 180; i++) fx.update(1 / 60);
+    expect(fx.liveParticles, 'charge stopped on release').toBe(0);
+    expect(bolts()).toBe(0);
+    events.emit('chargeStart', { id: 1, technique: 'rasengan', fullTime: 1.5 });
+    events.emit('death', { id: 1, team: 'player' });
+    for (let i = 0; i < 60; i++) fx.update(1 / 60);
+    expect(fx.liveParticles, 'charge stopped on death').toBe(0);
+    fx.dispose();
+  });
+});
+
 describe('meshes / audio', () => {
   it('creates and frees projectile meshes', () => {
     for (const v of ['kunai', 'shuriken', 'chakra'] as const) disposeObject(createProjectileMesh(v));
@@ -109,6 +166,11 @@ describe('meshes / audio', () => {
     const a = new AudioSystem(events);
     a.unlock(); a.setVolume(0.5); a.setPaused(true); a.setPaused(false); a.playUiClick();
     events.emit('waveStart', { wave: 1, totalWaves: 3, enemies: 4 });
+    events.emit('chargeStart', { id: 1, technique: 'chidori', fullTime: 1.5 });
+    events.emit('chargeRelease', { id: 1, technique: 'chidori', power: 1 });
+    events.emit('technique', { id: 1, name: 'sharingan', position: { x: 0, y: 0, z: 0 } });
+    events.emit('qteInput', { id: 1, dir: 'up', correct: false, index: 0 });
+    events.emit('grabEnd', { id: 1, targetId: 2, result: 'complete', hits: 6 });
     a.dispose();
   });
 });

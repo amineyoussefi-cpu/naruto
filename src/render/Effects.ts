@@ -4,7 +4,8 @@ import type { Vec3Like } from '../core/types';
 import type { Actor } from '../game/Actor';
 import { toon } from './toon';
 import { crackTexture, glintTexture, hexShieldTexture, impactLinesTexture, impactStarTexture } from './fx/textures';
-import { shockwaveMaterial, swirlGeometry, trailGeometry } from './fx/shapes';
+import { boltGeometry, commaRingGeometry, shockwaveMaterial, swirlGeometry, trailGeometry } from './fx/shapes';
+import { COMBAT } from '../config/combat';
 
 /** VFX tuning. Times in seconds, distances in metres. Intensities > 1 are HDR and bloom. */
 const FX = {
@@ -49,6 +50,18 @@ const FX = {
   airRingTo: 2.1, airPuffs: 16, airPuffSpeed: 3.5,
   // launcher (combo5) extras
   launchDust: 16, launchDustSpeed: 4.5, launchRingTo: 3.2,
+  // hold-to-charge (Rasengan / Chidori): converging particles toward the hand, pulsing ground ring
+  chargeRate: 110, chargeRadius: 0.95, chargeLife: 0.32, chargeRingEvery: 0.32, chargeHandUp: 0.7, chargeHandFwd: 0.45,
+  /** Chidori converges fewer particles (its sparks/bolts carry the effect). */
+  chidoriChargeRate: 0.45,
+  chidoriColor: 0xd6ecff, chidoriBlue: 0x5fb4ff, chidoriSparkRate: 70, chidoriArcEvery: 0.06, chidoriArcCharge: 0.6,
+  // lightning bolts (pooled meshes): life (s), spawn interval along a dash (s), length (m), thickness scale, HDR glow
+  maxBolts: 14, boltLife: 0.1, boltEvery: 0.03, boltLen: 1.8, boltWidth: 0.8, boltGlow: 2.2,
+  // Sharingan genjutsu: red wave, rotating comma marks, per-target flash
+  genjutsuColor: 0xff2a2a, genjutsuDark: 0x8a0f1a, waveLife: 0.6, maxTomoe: 2, tomoeFrom: 0.6, tomoeTo: 3.2, tomoeLife: 0.9, tomoeSpin: 5,
+  tomoeGlow: 2.4,
+  // grab sequence
+  grabFlash: 0xffffff, finisherShockTo: 3.2, finisherRingTo: 4.5,
 };
 
 /** Particle size curve over normalised age k ∈ [0,1]: shrink (sparks) or puff (grow then shrink). */
@@ -76,8 +89,10 @@ interface Billboard {
   follow: number | null; yOff: number;
 }
 
-/** Chakra-dash trail attached to an actor. */
-interface Streak { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; id: number | null; t: number; fade: number; acc: number; wake: number }
+/** Dash trail attached to an actor while its anim is `anim` (chakra dash or Chidori). */
+interface Streak { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; id: number | null; t: number; fade: number; acc: number; wake: number; anim: 'dash' | 'chidori'; bolt: number }
+/** Active hold-to-charge on an actor. */
+interface Charge { t: number; full: number; chidori: boolean; acc: number; ring: number; arc: number; spark: number; done: boolean }
 /** Substitution log: drops, bounces, rolls, then shrinks out. */
 interface Log { mesh: THREE.Mesh; life: number; vy: number; v: number; roll: number; tilt: number; ground: number; yaw: number }
 
@@ -123,6 +138,13 @@ export class Effects {
   private readonly unsub: (() => void)[] = [];
   /** Actors currently concentrating chakra → emission accumulator. */
   private readonly concentrating = new Map<number, number>();
+  private readonly charges = new Map<number, Charge>();
+  /** Grabber id → grabbed target id (for QTE strike impacts). */
+  private readonly grabs = new Map<number, number>();
+  private readonly boltGeos = [1, 2, 3, 4, 5].map((i) => boltGeometry(i * 13, 1, 9, 0.35, 0.07 * FX.boltWidth));
+  private readonly bolts: Timed<THREE.MeshBasicMaterial>[] = [];
+  private readonly tomoeGeo = commaRingGeometry();
+  private readonly tomoes: Timed<THREE.MeshBasicMaterial>[] = [];
   private nextLight = 0;
   private seed = 1;
 
@@ -135,7 +157,7 @@ export class Effects {
     this.lines = this.makePool(FX.maxLines, new THREE.OctahedronGeometry(1, 0), new THREE.MeshBasicMaterial(additive), 0, 0, FX.lineStretch, 'shrink');
     for (let i = 0; i < FX.maxStreaks; i++) {
       const mat = new THREE.MeshBasicMaterial({ ...additive, vertexColors: true, side: THREE.DoubleSide });
-      this.streaks.push({ mesh: this.add(new THREE.Mesh(this.streakGeo, mat)), mat, id: null, t: 0, fade: 0, acc: 0, wake: 0 });
+      this.streaks.push({ mesh: this.add(new THREE.Mesh(this.streakGeo, mat)), mat, id: null, t: 0, fade: 0, acc: 0, wake: 0, anim: 'dash', bolt: 0 });
     }
     for (let i = 0; i < FX.maxLogs; i++) {
       // Cylinder groups: 0 = bark side, 1/2 = cut ends.
@@ -165,6 +187,16 @@ export class Effects {
     for (let i = 0; i < FX.maxCracks; i++) {
       const mat = new THREE.MeshBasicMaterial({ map: this.tex.crack, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
       this.cracks.push({ mesh: this.add(new THREE.Mesh(this.crackGeo, mat), 1), mat, life: 0, max: 1, from: 1, to: 1, spin: 0 });
+    }
+    for (let i = 0; i < FX.maxBolts; i++) {
+      const mat = new THREE.MeshBasicMaterial({ ...additive, side: THREE.DoubleSide });
+      mat.color.set(FX.chidoriColor).multiplyScalar(FX.boltGlow);
+      this.bolts.push({ mesh: this.add(new THREE.Mesh(this.boltGeos[0], mat), 3), mat, life: 0, max: 1, from: 1, to: 1, spin: 0 });
+    }
+    for (let i = 0; i < FX.maxTomoe; i++) {
+      const mat = new THREE.MeshBasicMaterial({ ...additive, side: THREE.DoubleSide });
+      mat.color.set(FX.genjutsuColor).multiplyScalar(FX.tomoeGlow);
+      this.tomoes.push({ mesh: this.add(new THREE.Mesh(this.tomoeGeo, mat)), mat, life: 0, max: 1, from: 1, to: 1, spin: 0 });
     }
     for (let i = 0; i < FX.lights; i++) {
       // Lights stay in the scene at intensity 0 so toggling never recompiles shaders.
@@ -296,11 +328,16 @@ export class Effects {
           this.flashLight(e.position, FX.killColor, 1.2);
         } else {
           const launcher = e.kind === 'combo5';
-          const heavy = launcher || e.kind === 'combo3' || e.kind === 'combo4' || e.kind === 'special';
+          const heavy = launcher || e.kind === 'combo3' || e.kind === 'combo4' || e.kind === 'special' || e.kind === 'chidori' || e.kind === 'grabFinisher';
           this.spark(e.position, FX.hitColor, heavy ? 28 : 16, heavy ? 8 : 6, 0.35);
           this.impact(e.position, launcher ? FX.starKillSize : heavy ? FX.starHeavySize : FX.starSize, heavy ? FX.starHeavyLife : FX.starLife, heavy);
           if (heavy) this.ring(e.position, FX.hitColor, 0.2, 1.4, 0.22, 0.8);
           if (launcher) this.launcherBlast(e.targetId, e.position);
+        }
+        if (e.kind === 'chidori') { // lightning impact flash on each pierced enemy
+          this.spark(e.position, FX.chidoriColor, 26, 9, 0.3);
+          for (let i = 0; i < 4; i++) this.bolt(e.position, tmpV.set(this.rand() - 0.5, this.rand() - 0.3, this.rand() - 0.5), FX.boltLen * 0.6, FX.boltLife * 1.5);
+          this.flashLight(e.position, FX.chidoriBlue, 1.5);
         }
       }),
       on('death', (e) => {
@@ -310,6 +347,7 @@ export class Effects {
         this.poof(p, FX.deathPuffs, FX.deathPuffSpeed, FX.deathPuffLife, FX.deathPuffSize, 0.8);
         this.ring(p.setY(p.y - FX.deathHeight), FX.smokeColor, 0.4, 2.6, 0.35, 0.6, null, 1.2);
         this.concentrating.delete(e.id);
+        this.charges.delete(e.id);
       }),
       on('land', (e) => {
         const p = this.feet(e.id);
@@ -349,22 +387,69 @@ export class Effects {
         if (p) this.poof(p.setY(p.y + 0.7), 18, 2.2, 0.55, FX.dustSize * 2.4, 1);
       }),
       on('technique', (e) => {
+        if (e.name === 'chidori') { this.chidoriStart(e.id, e.position); return; }
+        if (e.name === 'sharingan') { this.sharinganWave(e.id, e.position); return; }
         const p = e.position;
-        this.spark(p, FX.chakraColor, 60, 11, 0.6, FX.sparkSize * 1.5);
-        this.spark(p, FX.chakraCore, 20, 4, 0.4, FX.sparkSize * 1.2);
-        const s = this.timed(this.shocks, p, FX.shockFrom, FX.shockTo, FX.shockLife);
+        const pw = 0.45 + 0.55 * Math.min(Math.max(e.power ?? 1, 0), 1); // Rasengan burst scales with charge power
+        this.spark(p, FX.chakraColor, Math.round(60 * pw), 11 * pw, 0.6, FX.sparkSize * 1.5);
+        this.spark(p, FX.chakraCore, Math.round(20 * pw), 4, 0.4, FX.sparkSize * 1.2);
+        const s = this.timed(this.shocks, p, FX.shockFrom, FX.shockTo * pw, FX.shockLife);
         s.mat.uniforms.color.value.set(FX.chakraColor).multiplyScalar(FX.shockGlow);
         const tilt = this.rand() * 0.5;
         for (let i = 0; i < 2; i++) {
-          const w = this.timed(this.swirls, p, FX.swirlFrom, FX.swirlTo, FX.swirlLife, i ? -FX.swirlSpin : FX.swirlSpin);
+          const w = this.timed(this.swirls, p, FX.swirlFrom, FX.swirlTo * pw, FX.swirlLife, i ? -FX.swirlSpin : FX.swirlSpin);
           w.mesh.rotation.x = i ? 0.9 + tilt : tilt; // one flat, one tilted
           w.mat.color.set(i ? FX.chakraCore : FX.chakraColor).multiplyScalar(FX.swirlGlow);
         }
         const g = this.feet(e.id) ?? tmpP.set(p.x, p.y - FX.techniqueGroundDrop, p.z);
-        this.timed(this.cracks, tmpV.set(p.x, g.y + 0.03, p.z), FX.crackSize, FX.crackSize, FX.crackLife);
-        this.ring(tmpV, FX.chakraColor, 0.3, 5, 0.45, 1);
-        this.impact(p, FX.starHeavySize, FX.starHeavyLife, false);
-        this.flashLight(p, FX.chakraColor, 1.6);
+        this.timed(this.cracks, tmpV.set(p.x, g.y + 0.03, p.z), FX.crackSize * pw, FX.crackSize * pw, FX.crackLife);
+        this.ring(tmpV, FX.chakraColor, 0.3, 5 * pw, 0.45, 1);
+        this.impact(p, FX.starHeavySize * pw, FX.starHeavyLife, false);
+        this.flashLight(p, FX.chakraColor, 1.6 * pw);
+      }),
+      on('chargeStart', (e) => {
+        this.charges.set(e.id, { t: 0, full: Math.max(e.fullTime, 0.05), chidori: e.technique === 'chidori', acc: 0, ring: 0, arc: 0, spark: 0, done: false });
+        const p = this.feet(e.id);
+        if (p) this.ring(p, e.technique === 'chidori' ? FX.chidoriBlue : FX.chakraColor, 0.3, 1.8, 0.3, 0.9);
+      }),
+      on('chargeRelease', (e) => this.charges.delete(e.id)),
+      on('genjutsu', (e) => {
+        for (const id of e.targets) {
+          const a = this.getActor(id);
+          if (!a) continue;
+          const c = tmpV.copy(a.position).setY(a.position.y + FX.chestHeight + 0.4);
+          this.billboard(c, this.tex.star, FX.genjutsuColor, FX.starGlow * 1.6, FX.starSize, FX.starSize, FX.starHeavyLife, 'pop', id);
+          this.spark(c, FX.genjutsuColor, 10, 3, 0.35);
+          this.ring(a.position, FX.genjutsuColor, 1.4, 0.3, 0.35, 0.9, id, FX.telegraphGlow);
+        }
+      }),
+      on('grabStart', (e) => {
+        this.grabs.set(e.id, e.targetId);
+        const c = this.chest(e.targetId);
+        if (!c) return;
+        this.impact(c, FX.starHeavySize, FX.starLife, false);
+        this.spark(c, FX.grabFlash, 14, 5, 0.25);
+        this.ring(tmpV.copy(c).setY(c.y - FX.chestHeight), FX.grabFlash, 0.3, 1.6, 0.25, 0.8, null, 1.5);
+        this.flashLight(c, FX.grabFlash, 0.9);
+      }),
+      on('qteInput', (e) => {
+        const c = this.chest(this.grabs.get(e.id) ?? -1);
+        if (!c) return;
+        if (!e.correct) { this.spark(c, FX.telegraphColor, 10, 3, 0.25, FX.sparkSize * 0.8); return; }
+        this.impact(c, FX.starHeavySize, FX.starLife, true, FX.hitColor);
+        this.spark(c, FX.hitColor, 18, 7, 0.3);
+      }),
+      on('grabEnd', (e) => {
+        this.grabs.delete(e.id);
+        if (e.result !== 'complete') return;
+        const c = this.chest(e.targetId)?.clone(); // launcherBlast reuses the shared temp vectors
+        if (!c) return;
+        const s = this.timed(this.shocks, c, FX.shockFrom, FX.finisherShockTo, FX.shockLife);
+        s.mat.uniforms.color.value.set(FX.hitColor).multiplyScalar(FX.shockGlow);
+        this.impact(c, FX.starKillSize, FX.starHeavyLife, true, FX.hitColor);
+        this.spark(c, FX.hitColor, 40, 11, 0.5, FX.sparkSize * 1.4);
+        this.launcherBlast(e.targetId, c);
+        this.ring(tmpV.copy(c).setY(c.y - FX.chestHeight + 0.05), FX.windColor, 0.3, FX.finisherRingTo, 0.4, 0.8, null, 1.6);
       }),
       on('telegraph', (e) => {
         const a = this.getActor(e.id);
@@ -401,7 +486,7 @@ export class Effects {
         this.ring(a.position, FX.chakraColor, 0.3, e.homing ? 2.4 : 1.8, 0.3, 0.9);
         this.poof(tmpV.copy(a.position).setY(a.position.y + 0.1), 6, 2, 0.35, FX.dustSize, 0.5);
         const s = this.streaks.find((x) => x.id === e.id) ?? this.streaks.find((x) => x.id === null && x.fade <= 0) ?? this.streaks.reduce((x, y) => (x.fade < y.fade ? x : y));
-        s.id = e.id; s.t = 0; s.fade = 1; s.acc = 0; s.wake = 0;
+        s.id = e.id; s.t = 0; s.fade = 1; s.acc = 0; s.wake = 0; s.anim = 'dash'; s.bolt = 0;
       }),
       on('substitution', (e) => {
         tmpV.set(e.from.x, e.from.y + FX.deathHeight, e.from.z);
@@ -418,6 +503,87 @@ export class Effects {
         this.concentrating.set(e.id, 0);
       }),
     );
+  }
+
+  /** Chest position of an actor (copy in tmpP), or null. */
+  private chest(id: number): THREE.Vector3 | null {
+    const a = this.getActor(id);
+    return a ? tmpP.copy(a.position).setY(a.position.y + FX.chestHeight) : null;
+  }
+
+  /** One lightning bolt from `p` along `dir` (need not be normalised), `len` metres, flickering out over `life`. */
+  private bolt(p: Vec3Like, dir: THREE.Vector3, len: number, life = FX.boltLife): void {
+    const b = this.timed(this.bolts, p, 1, 1, life);
+    b.mesh.geometry = this.boltGeos[Math.floor(this.rand() * this.boltGeos.length)];
+    b.mesh.quaternion.setFromUnitVectors(UP, tmpS.copy(dir).normalize());
+    b.mesh.rotateY(this.rand() * Math.PI * 2);
+    b.mesh.scale.set(1, len, 1);
+  }
+
+  /** Chidori release: burst at the hand, then the dash streak (lightning trail) follows the actor while anim = 'chidori'. */
+  private chidoriStart(id: number, p: Vec3Like): void {
+    this.spark(p, FX.chidoriColor, 40, 10, 0.35);
+    for (let i = 0; i < 5; i++) this.bolt(p, tmpV.set(this.rand() - 0.5, this.rand() - 0.2, this.rand() - 0.5), FX.boltLen * 0.7);
+    this.flashLight(p, FX.chidoriBlue, 1.8);
+    const g = this.feet(id);
+    if (g) this.ring(g, FX.chidoriBlue, 0.3, 2.6, 0.3, 0.9, null, 2.4);
+    const s = this.streaks.find((x) => x.id === id) ?? this.streaks.find((x) => x.id === null && x.fade <= 0) ?? this.streaks.reduce((x, y) => (x.fade < y.fade ? x : y));
+    s.id = id; s.t = 0; s.fade = 1; s.acc = 0; s.wake = 0; s.anim = 'chidori'; s.bolt = 0;
+  }
+
+  /** Sharingan cast: red ring wave out to the genjutsu radius, three rotating comma marks, eye glint. */
+  private sharinganWave(id: number, p: Vec3Like): void {
+    const g = this.feet(id) ?? tmpP.set(p.x, p.y, p.z);
+    const r = COMBAT.sharingan.radius;
+    this.ring(g, FX.genjutsuColor, 0.5, r, FX.waveLife, 0.9, null, FX.telegraphGlow);
+    this.ring(g, FX.genjutsuDark, 0.3, r * 0.6, FX.waveLife * 0.8, 0.8, null, 1.5);
+    const t = this.timed(this.tomoes, tmpV.copy(g).setY(g.y + 0.08), FX.tomoeFrom, FX.tomoeTo, FX.tomoeLife, FX.tomoeSpin);
+    t.mat.opacity = 1;
+    const a = this.getActor(id);
+    if (a) this.billboard(tmpV.copy(a.position).setY(a.position.y + a.height - 0.15), this.tex.glint, FX.genjutsuColor, FX.glintGlow, FX.glintWidth, FX.glintHeight * 0.6, FX.glintLife, 'glint', id);
+    this.flashLight(tmpV.copy(g).setY(g.y + 1), FX.genjutsuColor, 1.4);
+  }
+
+  /** Converging chakra toward the charging hand + pulsing ground ring; Chidori adds crackling sparks and ground arcs. */
+  private updateCharges(dt: number): void {
+    for (const [id, c] of this.charges) {
+      const a = this.getActor(id);
+      if (!a || !a.alive) { this.charges.delete(id); continue; }
+      c.t += dt;
+      const k = Math.min(c.t / c.full, 1);
+      const col = c.chidori ? FX.chidoriColor : FX.chakraColor;
+      const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
+      const h = tmpV.set(a.position.x + fx * FX.chargeHandFwd, a.position.y + FX.chargeHandUp, a.position.z + fz * FX.chargeHandFwd);
+      for (c.acc += FX.chargeRate * (c.chidori ? FX.chidoriChargeRate : 1) * (0.4 + 0.6 * k) * dt; c.acc >= 1; c.acc--) {
+        const u = this.rand() * 2 - 1, th = this.rand() * Math.PI * 2, rr = Math.sqrt(1 - u * u);
+        const r = FX.chargeRadius * (0.6 + 0.6 * this.rand()), life = FX.chargeLife * (0.7 + 0.3 * this.rand());
+        const dx = rr * Math.cos(th), dy = u, dz = rr * Math.sin(th);
+        this.spawn(this.chakra, h.x + dx * r, h.y + dy * r, h.z + dz * r, -dx * r / life, -dy * r / life + FX.chakraGravity * life * 0.5, -dz * r / life,
+          life, FX.chakraSize * (0.5 + 0.5 * this.rand()), this.rand() < 0.3 ? FX.chakraCore : col, FX.chakraGlow);
+      }
+      if (this.chakra.mesh.instanceColor) this.chakra.mesh.instanceColor.needsUpdate = true;
+      if ((c.ring -= dt) <= 0) {
+        c.ring = FX.chargeRingEvery * (1 - 0.5 * k);
+        this.ring(a.position, c.chidori ? FX.chidoriBlue : FX.chakraColor, 1.4 + 0.8 * k, 0.3, FX.chargeRingEvery, 0.5 + 0.4 * k);
+      }
+      if (c.chidori) {
+        for (c.spark += FX.chidoriSparkRate * k * dt; c.spark >= 1; c.spark--) this.spark(h, FX.chidoriColor, 1, 4, 0.15, FX.sparkSize * 0.8);
+        if ((c.arc -= dt) <= 0) {
+          c.arc = FX.chidoriArcEvery;
+          this.bolt(h, tmpS.set(this.rand() - 0.5, this.rand() - 0.5, this.rand() - 0.5), 0.3 + 0.4 * k, FX.boltLife * 0.6);
+          if (k >= FX.chidoriArcCharge) { // arc to the ground
+            const gx = (this.rand() - 0.5) * 1.6, gz = (this.rand() - 0.5) * 1.6;
+            const dir = tmpS.set(gx, -FX.chargeHandUp, gz);
+            this.bolt(h, dir, dir.length(), FX.boltLife * 0.8);
+          }
+        }
+      }
+      if (k >= 1 && !c.done) { // fully charged: flash
+        c.done = true;
+        this.ring(a.position, col, 0.3, 2.4, 0.3, 1, null, 2.4);
+        this.spark(h, col, 24, 6, 0.3);
+      }
+    }
   }
 
   /** Launcher finisher: shock ring on the ground, upward dust column, rising sparks, light flash. */
@@ -451,6 +617,7 @@ export class Effects {
 
   update(dt: number): void {
     this.updateConcentration(dt);
+    this.updateCharges(dt);
     this.stepPool(this.sparks, dt);
     this.stepPool(this.chakra, dt);
     this.stepPool(this.dust, dt);
@@ -471,6 +638,17 @@ export class Effects {
       w.mesh.scale.setScalar(w.from + (w.to - w.from) * (1 - (1 - k) ** 2));
       w.mesh.rotation.y += w.spin * dt;
       w.mat.opacity = 1 - k;
+    }
+    for (const b of this.bolts) {
+      const k = this.age(b, dt);
+      if (k >= 0) b.mat.opacity = (1 - k) * (0.6 + 0.4 * this.rand());
+    }
+    for (const t of this.tomoes) {
+      const k = this.age(t, dt);
+      if (k < 0) continue;
+      t.mesh.scale.setScalar(t.from + (t.to - t.from) * (1 - (1 - k) ** 2));
+      t.mesh.rotation.y += t.spin * dt;
+      t.mat.opacity = 1 - k * k;
     }
     for (const c of this.cracks) {
       const k = this.age(c, dt);
@@ -496,7 +674,7 @@ export class Effects {
       if (s.fade <= 0) continue;
       const a = s.id !== null ? this.getActor(s.id) : undefined;
       s.t += dt;
-      const dashing = !!a && a.alive && (a.anim === 'dash' || s.t < FX.dashGrace);
+      const dashing = !!a && a.alive && (a.anim === s.anim || s.t < FX.dashGrace);
       if (!dashing) { s.id = null; s.fade -= dt / FX.streakFade; }
       if (s.fade <= 0) { s.mesh.visible = false; continue; }
       if (a) {
@@ -507,8 +685,14 @@ export class Effects {
         s.mesh.rotation.set(0, yaw, 0);
         s.mesh.scale.set(1, 1, Math.min(FX.streakMax, Math.max(FX.streakMin, sp * FX.streakPerSpeed)));
         if (dashing) this.dashParticles(s, a.position, yaw, dt);
+        if (dashing && s.anim === 'chidori' && (s.bolt -= dt) <= 0) { // lightning crackling along the dash
+          s.bolt = FX.boltEvery;
+          const c = tmpP.set(a.position.x, a.position.y + FX.chestHeight, a.position.z);
+          this.bolt(c, tmpS.set(-Math.sin(yaw) + (this.rand() - 0.5) * 1.2, (this.rand() - 0.5) * 0.8, -Math.cos(yaw) + (this.rand() - 0.5) * 1.2), FX.boltLen * (0.6 + 0.6 * this.rand()));
+          this.spark(c, FX.chidoriColor, 3, 4, 0.2, FX.sparkSize * 0.8);
+        }
       }
-      s.mat.color.set(FX.chakraColor).multiplyScalar(FX.streakGlow * s.fade);
+      s.mat.color.set(s.anim === 'chidori' ? FX.chidoriColor : FX.chakraColor).multiplyScalar(FX.streakGlow * s.fade);
       s.mesh.visible = true;
     }
   }
@@ -661,9 +845,11 @@ export class Effects {
     }
     for (const r of this.rings) { r.life = 0; r.follow = null; r.mesh.visible = false; }
     for (const b of this.bills) { b.life = 0; b.follow = null; b.sprite.visible = false; }
-    for (const t of [...this.shocks, ...this.swirls, ...this.cracks]) { t.life = 0; t.mesh.visible = false; }
+    for (const t of [...this.shocks, ...this.swirls, ...this.cracks, ...this.bolts, ...this.tomoes]) { t.life = 0; t.mesh.visible = false; }
     for (const l of this.lights) { l.t = 0; l.light.intensity = 0; }
     this.concentrating.clear();
+    this.charges.clear();
+    this.grabs.clear();
   }
 
   dispose(): void {
@@ -681,8 +867,8 @@ export class Effects {
     }
     for (const r of this.rings) { r.mat.dispose(); r.mesh.removeFromParent(); }
     for (const b of this.bills) { b.mat.dispose(); b.sprite.removeFromParent(); }
-    for (const t of [...this.shocks, ...this.swirls, ...this.cracks]) { t.mat.dispose(); t.mesh.removeFromParent(); }
-    for (const g of [this.ringGeo, this.shockGeo, this.swirlGeo, this.crackGeo]) g.dispose();
+    for (const t of [...this.shocks, ...this.swirls, ...this.cracks, ...this.bolts, ...this.tomoes]) { t.mat.dispose(); t.mesh.removeFromParent(); }
+    for (const g of [this.ringGeo, this.shockGeo, this.swirlGeo, this.crackGeo, this.tomoeGeo, ...this.boltGeos]) g.dispose();
     for (const t of Object.values(this.tex)) t.dispose();
     for (const l of this.lights) { l.light.dispose(); l.light.removeFromParent(); }
   }

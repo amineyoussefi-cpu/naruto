@@ -9,6 +9,10 @@ const AUDIO = {
   /** Footsteps are frequent: keep them quiet. */
   footstepGain: 0.08,
   pauseFade: 0.08,
+  /** Charge hum: gain at start → at full charge, fade-out when released (s). */
+  chargeGain0: 0.05, chargeGain1: 0.22, chargeFade: 0.06,
+  /** Rasengan hum pitch (Hz) start → full; Chidori chirp carrier (Hz) start → full, chirp LFO rate (Hz) and depth (Hz). */
+  rasenganHz: [85, 240], chidoriHz: [1700, 3100], chirpRate: 17, chirpDepth: 700, crackleRate: 23,
 };
 
 type Wave = OscillatorType;
@@ -28,6 +32,8 @@ export class AudioSystem {
   private paused = false;
   private voices = 0;
   private readonly unsub: (() => void)[] = [];
+  /** Sustained charge sound (one at a time): owner id, output gain, sources to stop. */
+  private charge: { id: number; out: GainNode; nodes: AudioScheduledSourceNode[] } | null = null;
 
   constructor(private readonly events: EventBus) {
     const on = this.events.on.bind(this.events);
@@ -36,9 +42,20 @@ export class AudioSystem {
       on('damage', (e) => {
         if (e.blocked) this.clang();
         else if (e.kind === 'combo5') this.launcher();
-        else this.impact(e.killed || e.kind === 'combo3' || e.kind === 'combo4' || e.kind === 'special');
+        else this.impact(e.killed || e.kind === 'combo3' || e.kind === 'combo4' || e.kind === 'special' || e.kind === 'chidori' || e.kind === 'grabFinisher');
       }),
-      on('technique', () => this.boom()),
+      on('technique', (e) => {
+        if (e.name === 'chidori') { this.sizzle(); this.boom(0.5); } else if (e.name === 'sharingan') this.sharingan();
+        else this.boom(0.45 + 0.55 * Math.min(Math.max(e.power ?? 1, 0), 1));
+      }),
+      on('chargeStart', (e) => this.startCharge(e.id, e.technique, e.fullTime)),
+      on('chargeRelease', (e) => { if (this.charge?.id === e.id) this.stopCharge(); }),
+      on('grabStart', () => { this.impact(false); this.noise(0.1, 0.3, 'bandpass', 1200, 400, 1.5); }),
+      on('qteInput', (e) => {
+        if (e.correct) this.tone('square', 1760, 1760, 0.05, 0.08, 0, 0.002, 5000); // tick
+        else { this.tone('square', 110, 104, 0.25, 0.12, 0, 0.005, 1200); this.tone('square', 117, 110, 0.25, 0.1, 0, 0.005, 1200); } // buzz
+      }),
+      on('grabEnd', (e) => { if (e.result === 'complete') { this.boom(); this.launcher(); } }),
       on('jump', (e) => {
         if (!e.air) { this.tone('sine', 280, 620, 0.12, 0.12); return; }
         this.noise(0.25, 0.22, 'bandpass', 900, 3200, 2); // airy rising swish
@@ -62,7 +79,7 @@ export class AudioSystem {
       on('climbStart', () => this.noise(0.08, 0.12, 'bandpass', 1400, 900)),
       on('respawn', () => { this.noise(0.4, 0.25, 'bandpass', 600, 2400); this.tone('sine', 400, 900, 0.3, 0.1); }),
       on('projectileHit', (e) => (e.hitActor ? this.impact(false) : this.tone('triangle', 2400, 1800, 0.08, 0.1))),
-      on('death', () => { this.tone('sawtooth', 220, 55, 0.6, 0.12, 0, 0.01, 900); this.noise(0.35, 0.2, 'lowpass', 800, 100); }),
+      on('death', (e) => { if (this.charge?.id === e.id) this.stopCharge(); this.tone('sawtooth', 220, 55, 0.6, 0.12, 0, 0.01, 900); this.noise(0.35, 0.2, 'lowpass', 800, 100); }),
       on('waveStart', () => { this.taiko(0); this.taiko(0.22); this.taiko(0.44, 1.4); }),
       on('waveCleared', () => this.arpeggio([523, 659, 784, 1047], 0.09, 'triangle', 0.14)),
       // Victory / defeat stingers play on the UI bus because the game pauses right after these states.
@@ -111,6 +128,7 @@ export class AudioSystem {
   /** Mute/unmute gameplay sounds (pause). UI clicks and stingers stay audible. */
   setPaused(paused: boolean): void {
     this.paused = paused;
+    if (paused) this.stopCharge();
     if (this.ctx && this.sfx) this.sfx.gain.setTargetAtTime(paused ? 0 : AUDIO.sfxGain, this.ctx.currentTime, AUDIO.pauseFade / 3);
   }
 
@@ -121,6 +139,7 @@ export class AudioSystem {
 
   dispose(): void {
     this.unsub.forEach((u) => u());
+    this.stopCharge();
     try { void this.ctx?.close(); } catch { /* ignore */ }
     this.ctx = null;
   }
@@ -158,10 +177,101 @@ export class AudioSystem {
     this.noise(0.06, 0.2, 'highpass', 4000, 3000);
   }
 
-  private boom(): void {
-    this.tone('sine', 120, 35, 0.7, 0.7);
-    this.noise(0.6, 0.45, 'lowpass', 1800, 80);
-    this.tone('sawtooth', 600, 1200, 0.2, 0.05, 0, 0.005, 2500);
+  private boom(scale = 1): void {
+    this.tone('sine', 120, 35, 0.7, 0.7 * scale);
+    this.noise(0.6, 0.45 * scale, 'lowpass', 1800, 80);
+    this.tone('sawtooth', 600, 1200, 0.2, 0.05 * scale, 0, 0.005, 2500);
+  }
+
+  /** Chidori dash: electric sizzle (bright noise + falling buzz). */
+  private sizzle(): void {
+    this.noise(0.6, 0.35, 'highpass', 5000, 1800, 0.8);
+    this.tone('sawtooth', 1400, 300, 0.5, 0.1, 0, 0.005, 6000);
+    this.tone('square', 2600, 2200, 0.3, 0.04, 0.02, 0.002, 7000);
+  }
+
+  /** Sharingan cast: dark falling whoosh + low drone + bell. */
+  private sharingan(): void {
+    this.noise(0.8, 0.3, 'lowpass', 1400, 120, 1.2);
+    this.tone('sawtooth', 110, 65, 0.8, 0.12, 0, 0.02, 500);
+    for (const [f, g] of [[1318, 0.12], [1976, 0.06], [2637, 0.04]]) this.tone('sine', f, f * 0.995, 1.4, g, 0.08, 0.003);
+  }
+
+  /** Sustained charge sound whose pitch and volume rise until `fullTime`, then hold until stopped. */
+  private startCharge(id: number, technique: 'rasengan' | 'chidori', fullTime: number): void {
+    this.stopCharge();
+    const ctx = this.begin(false);
+    if (!ctx) return;
+    try {
+      const t = ctx.currentTime, end = t + Math.max(fullTime, 0.05);
+      const out = ctx.createGain();
+      out.gain.setValueAtTime(0.0001, t);
+      out.gain.exponentialRampToValueAtTime(AUDIO.chargeGain0, t + 0.05);
+      out.gain.exponentialRampToValueAtTime(AUDIO.chargeGain1, end);
+      out.connect(this.sfx!);
+      const nodes: AudioScheduledSourceNode[] = [];
+      const osc = (type: Wave, f0: number, f1: number) => {
+        const o = ctx.createOscillator();
+        o.type = type;
+        o.frequency.setValueAtTime(f0, t);
+        o.frequency.exponentialRampToValueAtTime(f1, end);
+        nodes.push(o);
+        return o;
+      };
+      const noiseSrc = (filter: BiquadFilterType, f0: number, f1: number, q: number) => {
+        const src = ctx.createBufferSource();
+        src.buffer = this.noiseBuf;
+        src.loop = true;
+        const flt = ctx.createBiquadFilter();
+        flt.type = filter; flt.Q.value = q;
+        flt.frequency.setValueAtTime(f0, t);
+        flt.frequency.exponentialRampToValueAtTime(f1, end);
+        nodes.push(src);
+        return src.connect(flt);
+      };
+      if (technique === 'rasengan') { // swirling wind hum
+        const [a, b] = AUDIO.rasenganHz;
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass'; lp.frequency.setValueAtTime(500, t); lp.frequency.exponentialRampToValueAtTime(2200, end);
+        osc('sawtooth', a, b).connect(lp).connect(out);
+        const sub = ctx.createGain(); sub.gain.value = 0.6;
+        osc('sine', a * 2, b * 2).connect(sub).connect(out);
+        const wind = ctx.createGain(); wind.gain.value = 0.8;
+        noiseSrc('bandpass', 400, 1800, 2).connect(wind).connect(out);
+      } else { // chirping birds: square carrier wobbled by a fast square LFO, plus gated crackle
+        const [a, b] = AUDIO.chidoriHz;
+        const car = osc('square', a, b);
+        const lfo = osc('square', AUDIO.chirpRate, AUDIO.chirpRate * 1.6);
+        const depth = ctx.createGain(); depth.gain.value = AUDIO.chirpDepth;
+        lfo.connect(depth).connect(car.frequency);
+        const cg = ctx.createGain(); cg.gain.value = 0.25;
+        car.connect(cg).connect(out);
+        const gate = ctx.createGain(); gate.gain.value = 0.5;
+        const gl = osc('square', AUDIO.crackleRate, AUDIO.crackleRate * 1.4);
+        const gd = ctx.createGain(); gd.gain.value = 0.5;
+        gl.connect(gd).connect(gate.gain);
+        noiseSrc('highpass', 2500, 4500, 0.7).connect(gate).connect(out);
+      }
+      nodes.forEach((n) => n.start(t));
+      if (nodes[0]) nodes[0].onended = () => out.disconnect();
+      this.charge = { id, out, nodes };
+    } catch {
+      this.charge = null;
+    }
+  }
+
+  private stopCharge(): void {
+    const c = this.charge;
+    this.charge = null;
+    if (!c || !this.ctx) return;
+    try {
+      const t = this.ctx.currentTime;
+      c.out.gain.cancelScheduledValues(t);
+      c.out.gain.setTargetAtTime(0.0001, t, AUDIO.chargeFade / 3);
+      c.nodes.forEach((n) => n.stop(t + AUDIO.chargeFade + 0.05));
+    } catch {
+      /* ignore */
+    }
   }
 
   private taiko(delay: number, strength = 1): void {

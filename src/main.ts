@@ -2,10 +2,12 @@ import './ui/styles.css';
 import { Game } from './game/Game';
 import { UI } from './ui/UI';
 import { detectLayout } from './core/layout';
+import { loadHeroAsset } from './render/heroAsset';
 
 async function boot(): Promise<void> {
   const host = document.getElementById('app')!;
   const uiRoot = document.getElementById('ui')!;
+  await loadHeroAsset(); // Blender player model; the procedural one is used if this fails
   const game = await Game.create(host);
   game.detectedLayout = await detectLayout();
   const ui = new UI(uiRoot, game);

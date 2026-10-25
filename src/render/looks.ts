@@ -32,11 +32,21 @@ export function pickEnemyLook(kind: ActorKind, rng: () => number = Math.random):
   return v[Math.min(v.length - 1, Math.floor(rng() * v.length))];
 }
 
-/** Player looks per playable character. STUB: visuals agent replaces sasuke/kakashi with recognizable looks. */
+/** Player looks per playable character (fan versions, procedural; Naruto uses the Blender hero when it loads). */
 export const CHARACTER_LOOKS: Record<CharacterId, NinjaLook> = {
-  naruto: LOOKS.player,
-  sasuke: { ...LOOKS.player, outfit: 0x2a3550, accent: 0xe8e8f0, hair: 0x1a1d2e },
-  kakashi: { ...LOOKS.player, outfit: 0x2c3a5a, accent: 0x4f6a3a, hair: 0xd8dde4 },
+  // Ren: the Blender-made hero (public/models/hero.glb). Colours below are only used if the model fails to load.
+  naruto: { ...LOOKS.player, model: 'hero', outfit: 0x2e4466, accent: 0x22324c, hair: 0x1b1d26, eyes: 0x5a3a26 },
+  // Sasuke (fan version): white high-collar shirt, navy trousers, purple rope belt, blue-black duck-tail hair.
+  sasuke: {
+    outfit: 0xd4d6e0, accent: 0xc4c6d4, pants: 0x262c48, belt: 0x7a4fb0, hair: 0x1f2438, skin: 0xf4d2b0, headband: 0x2a3550,
+    hairStyle: 'duckTail', eyes: 0x2a2a3a, plateMark: false,
+  },
+  // Kakashi (fan version): green flak vest over navy long sleeves, navy mask, tall silver hair, headband over the left eye.
+  kakashi: {
+    outfit: 0x2c3658, accent: 0x5f7d45, vest: 0x6b8a4c, pants: 0x2c3658, belt: 0x2c3658, hair: 0xdfe3ea, skin: 0xefcaa6,
+    headband: 0x2c3658, hairStyle: 'leaning', eyes: 0x34343c, mask: true, maskColor: 0x262e4c, longSleeves: true,
+    bandTilt: { roll: -0.3, pitch: 0.22, drop: 0.02 }, plateMark: false,
+  },
 };
 
 /** Display names for enemies (lock-on bar). */
