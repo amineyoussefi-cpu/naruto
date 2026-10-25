@@ -22,3 +22,4 @@ __pycache__/
 *.ckpt
 *.bin
 graphify-out/
+.claude/scheduled_tasks.lock
