@@ -18,18 +18,19 @@ export interface HitResult {
 }
 
 /**
- * Pure combat stats: health, chakra, cooldowns, guard, invulnerability, stun.
- * No Three.js or DOM: fully unit-testable. Owner: combat agent.
- * STUB: the combat agent replaces the internals and keeps this public API.
+ * Pure combat stats: health, chakra, cooldowns, guard, invulnerability, stun, concentration.
+ * No Three.js or DOM: fully unit-testable. Time only advances in `tick`. Owner: combat agent.
  */
 export class Fighter {
   hp: number;
   chakra: number;
   guarding = false;
+  /** Set each step by the owner's controller; regen boosts after `CHAKRA.concentrateStartup`. */
   concentrating = false;
   private invuln = 0;
   private stun = 0;
   private regenWait = 0;
+  private concentrateTime = 0;
   private cooldowns = new Map<string, number>();
 
   constructor(readonly stats: FighterStats, readonly guardFactor = 0.25) {
@@ -42,43 +43,58 @@ export class Fighter {
   get alive(): boolean { return this.hp > 0; }
   get invulnerable(): boolean { return this.invuln > 0; }
   get stunned(): boolean { return this.stun > 0; }
+  get stunRemaining(): number { return this.stun; }
+  /** True once concentration has passed its startup and is recharging. */
+  get concentrateActive(): boolean { return this.concentrating && this.concentrateTime >= CHAKRA.concentrateStartup; }
 
   tick(dt: number): void {
+    if (!this.alive) return;
     this.invuln = Math.max(0, this.invuln - dt);
     this.stun = Math.max(0, this.stun - dt);
     for (const [k, v] of this.cooldowns) this.cooldowns.set(k, Math.max(0, v - dt));
-    if (!this.alive) return;
-    if (this.regenWait > 0) this.regenWait -= dt;
-    else this.chakra = Math.min(this.maxChakra, this.chakra + CHAKRA.regenPerSecond * dt);
+    if (this.concentrating) {
+      this.concentrateTime += dt;
+      if (this.concentrateActive) this.addChakra(CHAKRA.concentrateRegenPerSecond * dt);
+      return;
+    }
+    this.concentrateTime = 0;
+    if (this.regenWait > 0) this.regenWait = Math.max(0, this.regenWait - dt);
+    else this.addChakra(CHAKRA.regenPerSecond * dt);
   }
 
   trySpendChakra(amount: number): boolean {
-    if (this.chakra < amount) return false;
+    if (!this.alive || this.chakra < amount) return false;
     this.chakra -= amount;
     this.regenWait = CHAKRA.regenDelay;
     return true;
   }
 
-  addChakra(amount: number): void { this.chakra = Math.min(this.maxChakra, this.chakra + amount); }
+  addChakra(amount: number): void {
+    if (this.alive) this.chakra = Math.min(this.maxChakra, this.chakra + amount);
+  }
   cooldownRemaining(key: string): number { return this.cooldowns.get(key) ?? 0; }
   cooldownReady(key: string): boolean { return this.cooldownRemaining(key) <= 0; }
-  startCooldown(key: string, seconds: number): void { this.cooldowns.set(key, seconds); }
-  setInvulnerable(seconds: number): void { this.invuln = Math.max(this.invuln, seconds); }
-  setStun(seconds: number): void { this.stun = Math.max(this.stun, seconds); }
+  startCooldown(key: string, seconds: number): void { if (this.alive) this.cooldowns.set(key, seconds); }
+  setInvulnerable(seconds: number): void { if (this.alive) this.invuln = Math.max(this.invuln, seconds); }
+  setStun(seconds: number): void { if (this.alive) this.stun = Math.max(this.stun, seconds); }
 
   applyHit(hit: HitInfo): HitResult {
     if (!this.alive || this.invulnerable) return { applied: 0, blocked: false, killed: false, ignored: true };
     const blocked = this.guarding && !hit.unblockable;
     const applied = Math.min(this.hp, blocked ? hit.damage * this.guardFactor : hit.damage);
     this.hp -= applied;
-    return { applied, blocked, killed: this.hp <= 0, ignored: false };
+    this.concentrating = false;
+    this.concentrateTime = 0;
+    const killed = this.hp <= 0;
+    if (killed) this.guarding = false;
+    return { applied, blocked, killed, ignored: false };
   }
 
   reset(): void {
     this.hp = this.maxHp;
     this.chakra = this.maxChakra;
     this.guarding = this.concentrating = false;
-    this.invuln = this.stun = this.regenWait = 0;
+    this.invuln = this.stun = this.regenWait = this.concentrateTime = 0;
     this.cooldowns.clear();
   }
 }
