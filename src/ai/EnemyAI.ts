@@ -251,6 +251,7 @@ export class EnemyAI {
       b.phase = 'active';
       b.t = 0;
       a.model.setTelegraph(false);
+      this.ctx.events.emit('attackStart', { id: a.id, kind: ranged ? 'enemyRanged' : 'enemyMelee', position: a.position });
       if (ranged) {
         this.throwAt(a, dist, ENEMIES.ranged.damage * dmgMul);
         this.anim(b, 'throw', true);

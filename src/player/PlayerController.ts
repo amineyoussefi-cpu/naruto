@@ -11,8 +11,8 @@ const UP = new THREE.Vector3(0, 1, 0);
 /**
  * Camera-relative locomotion, jump, wall climbing, respawn. Owner: movement agent.
  *
- * Facing rules (in priority order): climbing faces the wall; a combat `forcedVelocity` faces its
- * direction (dodge/lunge); lock-on without sprint faces the target (strafe); otherwise face movement.
+ * Facing rules (in priority order): climbing faces the wall; during a combat `forcedVelocity`
+ * combat owns yaw (dodge/lunge/dash); lock-on without sprint faces the target (strafe); otherwise face movement.
  */
 export class PlayerController {
   private delta = new THREE.Vector3();
@@ -109,9 +109,9 @@ export class PlayerController {
     const step = MOVEMENT.turnSpeed * dt;
     const lock = this.ctx.camera.lockTarget;
     let target: number | null = null;
-    if (c.forcedVelocity) {
-      if (c.forcedVelocity.x !== 0 || c.forcedVelocity.z !== 0) target = Math.atan2(c.forcedVelocity.x, c.forcedVelocity.z);
-    } else if (lock && lock.alive && !this.sprinting && a.alive) {
+    // Combat owns yaw during forced moves (lunge/dash face forward already; a back-dodge must not spin).
+    if (c.forcedVelocity) return;
+    if (lock && lock.alive && !this.sprinting && a.alive) {
       target = Math.atan2(lock.position.x - a.position.x, lock.position.z - a.position.z);
     } else if (moving && a.alive) {
       target = Math.atan2(this.wish.x, this.wish.z);
