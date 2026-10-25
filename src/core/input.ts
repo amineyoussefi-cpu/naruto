@@ -26,12 +26,12 @@ export const KEY_BINDINGS: Record<Action, string[]> = {
   pause: ['Escape', 'KeyP'],
 };
 
-/** Key labels per layout for the help screens. */
+/** Key labels per layout for the help screens (UI is in French). */
 export const KEY_LABELS: Record<'qwerty' | 'azerty', Record<Action, string>> = {
   qwerty: {
-    forward: 'W', back: 'S', left: 'A', right: 'D', sprint: 'Shift', jump: 'Space',
-    attack: 'Left click', guard: 'Right click', special: 'E', kunai: 'Q / Middle click',
-    concentrate: 'R (hold)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Wheel', pause: 'Esc / P',
+    forward: 'W', back: 'S', left: 'A', right: 'D', sprint: 'Maj', jump: 'Espace',
+    attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'Q / Clic molette',
+    concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
   },
   azerty: {
     forward: 'Z', back: 'S', left: 'Q', right: 'D', sprint: 'Maj', jump: 'Espace',
