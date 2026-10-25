@@ -33,7 +33,7 @@ const FX = {
   concentrateRate: 70, concentrateRadius: 0.55, concentrateRise: 2.6, concentrateLife: 0.6,
   // death poof
   deathPuffs: 26, deathPuffSpeed: 3.2, deathPuffLife: 0.9, deathPuffSize: 0.55, deathHeight: 0.8,
-  lightIntensity: 6, lightRange: 7, lightDecay: 8,
+  lightIntensity: 3, lightRange: 7, lightDecay: 8,
 };
 
 /** Particle size curve over normalised age k ∈ [0,1]: shrink (sparks) or puff (grow then shrink). */

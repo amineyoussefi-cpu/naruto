@@ -17,10 +17,12 @@ export const POSTFX = {
   saturation: 1.06,
   contrast: 1.06,
   vignette: 0.28,
-  bloomStrength: 0.75,
-  bloomRadius: 0.45,
-  /** Linear HDR luminance above which pixels bloom: only emissive "glow" materials exceed it. */
-  bloomThreshold: 1.0,
+  bloomStrength: 0.55,
+  bloomRadius: 0.3,
+  /** Linear HDR luminance above which pixels bloom: only emissive "glow" materials exceed it (bright sunlit sand peaks near 1). */
+  bloomThreshold: 1.3,
+  /** Global gain applied by glowMaterial so callers' intensities clear the threshold. */
+  glowGain: 1.6,
   msaaSamples: 4,
 } as const;
 
@@ -89,9 +91,9 @@ const InkShader = {
         float r = length(c);
         float a = atan(c.y, c.x);
         float bucket = floor(a * 70.0);
-        float on = step(0.72, hash(bucket + floor(time * 18.0) * 13.0));
-        float streak = on * smoothstep(0.32, 0.75, r) * speedLines;
-        col = mix(col, vec3(1.0), streak * 0.55);
+        float on = step(0.86, hash(bucket + floor(time * 18.0) * 13.0));
+        float streak = on * smoothstep(0.42, 0.8, r) * speedLines;
+        col = mix(col, vec3(1.0), streak * 0.4);
       }
 
       // Vignette.
@@ -168,10 +170,10 @@ export class PostFX {
 
 /**
  * Emissive "glow" material: colour pushed above 1.0 in linear HDR so it blooms
- * (bloom threshold is 1.0, nothing lit by the sun reaches that).
+ * (see POSTFX.bloomThreshold / glowGain; sunlit surfaces stay below the threshold).
  */
 export function glowMaterial(color: number, intensity = 2.5, extra: THREE.MeshBasicMaterialParameters = {}): THREE.MeshBasicMaterial {
   const m = new THREE.MeshBasicMaterial({ ...extra });
-  m.color.setHex(color).multiplyScalar(intensity);
+  m.color.setHex(color).multiplyScalar(intensity * POSTFX.glowGain);
   return m;
 }

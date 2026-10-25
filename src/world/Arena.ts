@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import type RAPIER from '@dimforge/rapier3d-compat';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import { toon } from '../render/toon';
+import { glowMaterial } from '../render/PostFX';
+import { Batcher } from './Batcher';
+import { buildSky, SKY } from './Sky';
+import { buildVillage, makeKitGeometries } from './Village';
 
 export interface ArenaInfo {
   playerSpawn: THREE.Vector3;
@@ -41,20 +45,26 @@ const LAYOUT = {
   trunkRadius: 0.32, trunkHeight: 3,
   playerSpawn: [0, 0.1, 0] as const,
   enemySpawns: [[-26, -22], [25, -22], [28, 4], [-28, 10], [-12, 26], [12, 26], [-2, -21], [28, 28]] as const,
+  /** Stone lanterns (tōrō) along the bridge path and by the shrine gate: [x, z]; collider radius. */
+  stoneLanterns: [[-4, -19.5], [4, -19.5], [-4, -24.5], [4, -24.5], [-4.4, -45], [4.4, -45]] as const,
+  stoneLanternRadius: 0.45,
+  /** Wooden poles carrying paper-lantern strings along the north and west cliffs: [x, z]; height, collider radius. */
+  lanternPoles: [[-24, 32.5], [-8, 32.5], [8, 32.5], [24, 32.5], [-32.5, 20], [-32.5, 4], [-32.5, -12]] as const,
+  lanternPoleHeight: 6, lanternPoleRadius: 0.16,
+  /** Paper lanterns per string and string sag (m). */
+  lanternsPerString: 6, lanternSag: 1.4,
+  /** Extra dirt paths (visual): [x, z, width, length, rotY]. */
+  paths: [[14, 4, 2.6, 16, 1.3], [-15, 6, 2.6, 18, -1.1], [0, 16, 2.4, 14, 0]] as const,
   /** Lighting / atmosphere. */
-  sunDir: [30, 50, 22] as const, sunIntensity: 2.4, hemiIntensity: 1.2, shadowExtent: 46, shadowMapSize: 2048,
-  fogNear: 70, fogFar: 230, skyRadius: 420,
+  sunDir: [30, 50, 22] as const, sunColor: 0xfff1d6, sunIntensity: 2.5, hemiSky: 0xbfe0ff, hemiGround: 0x6d8a4a, hemiIntensity: 2.4,
+  shadowExtent: 46, shadowMapSize: 2048,
+  fogNear: 80, fogFar: 260,
   colors: {
-    grass: 0x7aa64f, dirt: 0xc9a46a, rock: 0x8c7d6b, rockDark: 0x6f6355, wood: 0x8a5a35, deck: 0xa8774a,
-    crate: 0xb5874f, leaves: 0x3f7d3a, leavesLight: 0x5a9a42, rope: 0xd8c08a, torii: 0xc8372d, mountain: 0x7f93a8,
-    fog: 0xd7e3ea, skyTop: 0x3f86d6, skyHorizon: 0xf4e0be, skyBottom: 0xc4d4de,
+    grass: 0x79b84a, dirt: 0xd9b77a, rock: 0xc4a684, rockDark: 0xa98a6a, stone: 0xa39a8a, wood: 0x9a6a3e, timber: 0x5a3a26, deck: 0xb5844f,
+    crate: 0xc29055, leaves: 0x5fae3f, leavesLight: 0x7cc24a, rope: 0xe0c890, torii: 0xc8372d, straw: 0xe6c97a,
+    lantern: 0xffb060, lantern2: 0xff7048, wire: 0x3a2a22,
   },
 };
-
-const SKY_VERT = /* glsl */ `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
-const SKY_FRAG = /* glsl */ `
-uniform vec3 top; uniform vec3 horizon; uniform vec3 bottom; varying vec3 vP;
-void main(){ float h = vP.y; vec3 c = h > 0.0 ? mix(horizon, top, pow(h, 0.6)) : mix(horizon, bottom, pow(-h, 0.4)); gl_FragColor = vec4(c, 1.0); }`;
 
 /** Deterministic hash in [0,1) so the arena looks the same on every run. */
 const hash = (n: number) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
@@ -83,16 +93,20 @@ export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo
   const mat = {
     grass: own(toon(C.grass)), dirt: own(toon(C.dirt)), rock: own(toon(C.rock)), rockDark: own(toon(C.rockDark)),
     wood: own(toon(C.wood)), deck: own(toon(C.deck)), crate: own(toon(C.crate)), leaves: own(toon(C.leaves)),
-    leavesLight: own(toon(C.leavesLight)), rope: own(toon(C.rope)), torii: own(toon(C.torii)), mountain: own(toon(C.mountain)),
-    white: own(toon(0xffffff)),
+    leavesLight: own(toon(C.leavesLight)), rope: own(toon(C.rope)), torii: own(toon(C.torii)), timber: own(toon(C.timber)),
+    white: own(toon(0xffffff)), ground: own(toon(C.grass, { rim: 0 })), path: own(toon(C.dirt, { rim: 0 })),
   };
   const unitBox = own(new THREE.BoxGeometry(1, 1, 1));
+  const kit = makeKitGeometries();
+  Object.values(kit).forEach(own);
+  /** Decorative instanced parts (white material, colour per instance) and glowing lanterns. */
+  const deco = new Batcher(), glow = new Batcher();
 
   // --- Ground slabs (grass top, rock sides): plateau and far ledge.
   const slab = (minX: number, maxX: number, minZ: number, maxZ: number, depth: number) => {
     const half = new THREE.Vector3((maxX - minX) / 2, depth / 2, (maxZ - minZ) / 2);
     const c = new THREE.Vector3((minX + maxX) / 2, -depth / 2, (minZ + maxZ) / 2);
-    const m = add(unitBox, [mat.rockDark, mat.rockDark, mat.grass, mat.rockDark, mat.rockDark, mat.rockDark], false, true);
+    const m = add(unitBox, [mat.rock, mat.rock, mat.ground, mat.rock, mat.rock, mat.rock], false, true);
     m.position.copy(c);
     m.scale.set(half.x * 2, depth, half.z * 2);
     box(c, half);
@@ -102,10 +116,15 @@ export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo
   slab(-L.ledge.halfX, L.ledge.halfX, L.ledge.minZ, L.ledge.maxZ, P.depth * 0.6);
 
   // Training circle and a dirt path towards the bridge (visual only).
-  const circle = add(own(new THREE.CircleGeometry(8, 40).rotateX(-Math.PI / 2)), mat.dirt, false, true);
+  const circle = add(own(new THREE.CircleGeometry(8, 40).rotateX(-Math.PI / 2)), mat.path, false, true);
   circle.position.y = 0.015;
-  const path = add(own(new THREE.PlaneGeometry(3.2, 18).rotateX(-Math.PI / 2)), mat.dirt, false, true);
-  path.position.set(0, 0.012, -17);
+  const pathGeo = own(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
+  const path = add(pathGeo, mat.path, false, true);
+  path.position.set(0, 0.012, -17); path.scale.set(3.2, 1, 18);
+  for (const [x, z, w, len, rot] of L.paths) {
+    const p = add(pathGeo, mat.path, false, true);
+    p.position.set(x, 0.01, z); p.scale.set(w, 1, len); p.rotation.y = rot;
+  }
 
   // --- Outer climbable cliff ring (instanced segments with an outward boulder cap).
   const wallBoxes: { c: THREE.Vector3; s: THREE.Vector3; rot: number; collide: boolean }[] = [];
@@ -139,8 +158,14 @@ export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), yAxis = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
   wallBoxes.forEach((b, i) => {
     walls.setMatrixAt(i, m4.compose(b.c, q.setFromAxisAngle(yAxis, b.rot), b.s));
-    walls.setColorAt(i, col.set(C.rock).multiplyScalar(0.85 + hash(i) * 0.25));
+    walls.setColorAt(i, col.set(b.collide ? C.rock : C.rockDark).multiplyScalar(0.92 + hash(i) * 0.14));
     if (b.collide) box(b.c, b.s.clone().multiplyScalar(0.5), b.rot, true);
+    // Visual strata: darker bands, a grass lip on top and a chunky boulder on the outer ridge.
+    deco.frame(b.c.x, 0, b.c.z, b.rot);
+    const bands = b.collide ? [0.32, 0.68] : [0.5];
+    for (const k of bands) deco.put(kit.box, col.set(C.rockDark).multiplyScalar(0.95 + hash(i + k) * 0.1), 0, b.s.y * k, 0, b.s.x * 0.995, 1.1 + hash(i * 2) * 0.6, b.s.z + 0.24);
+    deco.put(kit.box, col.set(C.grass).multiplyScalar(0.95 + hash(i * 5) * 0.1), 0, b.s.y - 0.2, 0, b.s.x + 0.2, 0.25, b.s.z + 0.2);
+    if (!b.collide) deco.put(kit.rock, col.set(C.rock), (hash(i * 7) - 0.5) * b.s.x * 0.5, b.s.y + 0.3, 0, 1.6 + hash(i) * 1.2, 1.2 + hash(i * 3), 1.6 + hash(i * 9), hash(i) * 3);
   });
   group.add(walls);
   disposables.push(walls);
@@ -209,22 +234,25 @@ export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo
   const postGeo = own(new THREE.CylinderGeometry(L.postRadius, L.postRadius * 1.1, L.postHeight, 8).translate(0, L.postHeight / 2, 0));
   const armGeo = own(new THREE.BoxGeometry(0.9, 0.12, 0.12).translate(0, L.postHeight * 0.7, 0));
   const posts = new THREE.InstancedMesh(postGeo, mat.wood, L.posts.length);
-  const arms = new THREE.InstancedMesh(armGeo, mat.rope, L.posts.length);
+  const arms = new THREE.InstancedMesh(armGeo, mat.wood, L.posts.length);
   posts.castShadow = arms.castShadow = true;
   L.posts.forEach(([x, z], i) => {
     m4.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(yAxis, hash(i + 9) * Math.PI), new THREE.Vector3(1, 1, 1));
     posts.setMatrixAt(i, m4); arms.setMatrixAt(i, m4);
+    // Straw-wrapped training dummy body and head (visual).
+    deco.frame(x, 0, z, hash(i + 9) * Math.PI)
+      .put(kit.cylLow, C.straw, 0, 0.45, 0, L.postRadius * 1.6, 0.75, L.postRadius * 1.6)
+      .put(kit.cylLow, C.rope, 0, 0.75, 0, L.postRadius * 1.7, 0.12, L.postRadius * 1.7)
+      .put(kit.ball, C.straw, 0, L.postHeight + 0.12, 0, 0.24, 0.26, 0.24);
     cyl(new THREE.Vector3(x, L.postHeight / 2, z), L.postHeight / 2, L.postRadius);
   });
   group.add(posts, arms); disposables.push(posts, arms);
 
   // --- Trees (trunk collider) and decorative scatter (no colliders).
   const trunkGeo = own(new THREE.CylinderGeometry(L.trunkRadius * 0.7, L.trunkRadius, L.trunkHeight, 6).translate(0, L.trunkHeight / 2, 0));
-  const crownGeo = own(new THREE.ConeGeometry(2, 3.2, 7).translate(0, L.trunkHeight + 1.2, 0));
-  const crown2Geo = own(new THREE.ConeGeometry(1.4, 2.4, 7).translate(0, L.trunkHeight + 2.8, 0));
   const trunks = new THREE.InstancedMesh(trunkGeo, mat.wood, L.trees.length);
-  const crowns = new THREE.InstancedMesh(crownGeo, mat.leaves, L.trees.length);
-  const crowns2 = new THREE.InstancedMesh(crown2Geo, mat.leavesLight, L.trees.length);
+  const crowns = new THREE.InstancedMesh(kit.crownDark, mat.leaves, L.trees.length);
+  const crowns2 = new THREE.InstancedMesh(kit.crownLight, mat.leavesLight, L.trees.length);
   for (const im of [trunks, crowns, crowns2]) im.castShadow = true;
   L.trees.forEach(([x, z], i) => {
     const s = 0.9 + hash(i * 11) * 0.5;
@@ -235,7 +263,7 @@ export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo
   group.add(trunks, crowns, crowns2); disposables.push(trunks, crowns, crowns2);
 
   const tuftGeo = own(new THREE.ConeGeometry(0.12, 0.45, 4).translate(0, 0.2, 0));
-  const tufts = new THREE.InstancedMesh(tuftGeo, mat.leavesLight, 260);
+  const tufts = new THREE.InstancedMesh(tuftGeo, mat.leavesLight, 340);
   const pebbleGeo = own(new THREE.DodecahedronGeometry(0.4, 0));
   const pebbles = new THREE.InstancedMesh(pebbleGeo, mat.rock, 40);
   pebbles.castShadow = true; pebbles.receiveShadow = true;
@@ -292,35 +320,58 @@ export function buildArena(scene: THREE.Scene, physics: PhysicsWorld): ArenaInfo
   }
   const beam = add(unitBox, mat.torii); beam.position.set(0, 4.6, gz); beam.scale.set(7.4, 0.35, 0.5);
   const beam2 = add(unitBox, mat.torii); beam2.position.set(0, 3.7, gz); beam2.scale.set(6, 0.25, 0.35);
-  const top = add(unitBox, mat.rockDark); top.position.set(0, 5.0, gz); top.scale.set(8.2, 0.3, 0.8);
+  const top = add(unitBox, mat.timber); top.position.set(0, 5.0, gz); top.scale.set(8.2, 0.3, 0.8);
 
-  // --- Distant mountains (no colliders, fogged).
-  const mountainGeo = own(new THREE.ConeGeometry(1, 1, 6).translate(0, 0.5, 0));
-  const mountains = new THREE.InstancedMesh(mountainGeo, mat.mountain, 22);
-  for (let i = 0; i < mountains.count; i++) {
-    const a = (i / mountains.count) * Math.PI * 2 + hash(i) * 0.2;
-    const r = 120 + hash(i * 7) * 60;
-    const h = 30 + hash(i * 3) * 45;
-    mountains.setMatrixAt(i, m4.compose(new THREE.Vector3(Math.cos(a) * r, -25, Math.sin(a) * r), q.setFromAxisAngle(yAxis, a), new THREE.Vector3(h * 0.9, h + 25, h * 0.9)));
+  // --- Stone lanterns (small colliders, kept off the path and the bridge) with a warm glowing fire box.
+  for (const [x, z] of L.stoneLanterns) {
+    deco.frame(x, 0, z, 0)
+      .put(kit.box, C.stone, 0, 0, 0, 0.9, 0.3, 0.9)
+      .put(kit.cylLow, C.stone, 0, 0.3, 0, 0.22, 0.8, 0.22)
+      .put(kit.box, C.stone, 0, 1.1, 0, 0.7, 0.15, 0.7)
+      .put(kit.box, C.stone, 0, 1.25, 0, 0.55, 0.45, 0.55)
+      .put(kit.hip, C.stone, 0, 1.68, 0, 1.15, 0.5, 1.15)
+      .put(kit.ball, C.stone, 0, 2.25, 0, 0.14, 0.14, 0.14);
+    glow.frame(x, 0, z, 0).put(kit.box, C.lantern, 0, 1.33, 0, 0.58, 0.28, 0.4).put(kit.box, C.lantern, 0, 1.33, 0, 0.4, 0.28, 0.58);
+    cyl(new THREE.Vector3(x, 1.1, z), 1.1, L.stoneLanternRadius);
   }
-  group.add(mountains); disposables.push(mountains);
 
-  // --- Sky, fog, lights.
-  const skyGeo = own(new THREE.SphereGeometry(L.skyRadius, 24, 12));
-  const skyMat = own(new THREE.ShaderMaterial({
-    uniforms: { top: { value: new THREE.Color(C.skyTop) }, horizon: { value: new THREE.Color(C.skyHorizon) }, bottom: { value: new THREE.Color(C.skyBottom) } },
-    vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthWrite: false,
-  }));
-  const sky = new THREE.Mesh(skyGeo, skyMat);
-  sky.renderOrder = -1;
-  sky.frustumCulled = false;
-  group.add(sky);
+  // --- Paper-lantern strings between tall poles along the cliffs (poles collide, lanterns/wires decorative).
+  const wirePts: number[] = [];
+  const poleRuns = [L.lanternPoles.slice(0, 4), L.lanternPoles.slice(4)];
+  for (const run of poleRuns) run.forEach(([x, z], k) => {
+    const H = L.lanternPoleHeight;
+    deco.frame(x, 0, z, 0).put(kit.cylLow, C.timber, 0, 0, 0, L.lanternPoleRadius, H, L.lanternPoleRadius).put(kit.box, C.timber, 0, H - 0.5, 0, 0.9, 0.14, 0.14, x === run[0][0] ? 0 : Math.PI / 2);
+    cyl(new THREE.Vector3(x, H / 2, z), H / 2, L.lanternPoleRadius);
+    if (k === run.length - 1) return;
+    const [x1, z1] = run[k + 1], n = L.lanternsPerString, y0 = H - 0.4;
+    const at = (t: number) => [x + (x1 - x) * t, y0 - 4 * t * (1 - t) * L.lanternSag, z + (z1 - z) * t];
+    for (let s = 0; s < 12; s++) wirePts.push(...at(s / 12), ...at((s + 1) / 12));
+    glow.frame(0, 0, 0);
+    for (let j = 1; j <= n; j++) {
+      const [lx, ly, lz] = at(j / (n + 1));
+      glow.put(kit.ball, j % 2 ? C.lantern : C.lantern2, lx, ly - 0.45, lz, 0.28, 0.38, 0.28);
+      wirePts.push(lx, ly, lz, lx, ly - 0.2, lz);
+    }
+  });
+  const wires = new THREE.LineSegments(
+    own(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(wirePts, 3))),
+    own(new THREE.LineBasicMaterial({ color: C.wire })),
+  );
+  group.add(wires);
+  for (const im of deco.build(mat.white, true, true)) { group.add(im); own(im); }
+  for (const im of glow.build(own(glowMaterial(0xffffff, 2.4)))) { group.add(im); own(im); }
+
+  // --- Village hills, distant mountains and sky.
+  buildVillage(group, own, kit);
+  const sunDir = new THREE.Vector3(...L.sunDir);
+  buildSky(group, sunDir, own);
+
   const prevFog = scene.fog, prevBg = scene.background;
-  scene.fog = new THREE.Fog(C.fog, L.fogNear, L.fogFar);
-  scene.background = new THREE.Color(C.fog);
+  scene.fog = new THREE.Fog(SKY.horizon, L.fogNear, L.fogFar);
+  scene.background = new THREE.Color(SKY.horizon);
 
-  const hemi = new THREE.HemisphereLight(0xdcefff, 0x5d6b3c, L.hemiIntensity);
-  const sun = new THREE.DirectionalLight(0xfff0d4, L.sunIntensity);
+  const hemi = new THREE.HemisphereLight(L.hemiSky, L.hemiGround, L.hemiIntensity);
+  const sun = new THREE.DirectionalLight(L.sunColor, L.sunIntensity);
   sun.position.set(...L.sunDir);
   sun.target.position.set(0, 0, 0);
   sun.castShadow = true;

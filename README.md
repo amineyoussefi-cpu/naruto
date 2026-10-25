@@ -116,10 +116,20 @@ Le projet a été construit par une équipe d'agents IA en parallèle ; les cons
 Vitesses, gravité, hauteur de saut, coûts et régénération de chakra, dégâts, fenêtres d'attaque, recharges,
 ennemis et vagues : tout est dans [`src/config/`](src/config/), documenté dans [docs/CONFIG.md](docs/CONFIG.md).
 
+## Direction artistique
+
+Inspirée de *Naruto to Boruto: Shinobi Striker*, entièrement originale (aucun personnage, symbole ou logo repris) :
+contours à l'encre calculés en post-traitement, cel-shading à deux tons avec liseré lumineux, bloom réservé au chakra,
+lignes de vitesse en sprint et pendant les ruées, ciel anime avec nuages cel-shadés, village caché en terrasses
+(tours à toits vermillon, maisons, lanternes), ninjas anime (yeux, coiffures, gilets, écharpes animées), impacts
+façon manga et HUD incliné. Paramètres > *Qualité graphique : Basse* désactive le post-traitement et les ombres pour
+les machines modestes. Réglages visuels : `POSTFX` dans [`src/render/PostFX.ts`](src/render/PostFX.ts).
+
 ## Performances
 
 Mesuré le 2026-10-25 sur Apple M4 Pro (macOS, Chromium headless avec rendu Metal), en 1920×1080 pendant une vague :
-**60 FPS stables** (limité par la synchro verticale, 95ᵉ centile 16,7 ms). Avec le rendu logiciel SwiftShader (sans GPU),
+**60 FPS stables** (limité par la synchro verticale, 95ᵉ centile 16,8 ms) en qualité *Élevée* (post-traitement anime
+complet, ~140–220 appels de dessin et ~240 k triangles par image). Avec le rendu logiciel SwiftShader (sans GPU),
 environ 16 FPS : le jeu reste jouable en test mais pas confortable. Une seule lumière projette des ombres
 (carte 2048), les accessoires répétés sont instanciés et les particules sont mutualisées.
 
@@ -130,6 +140,9 @@ environ 16 FPS : le jeu reste jouable en test mais pas confortable. Une seule lu
 - La sensation (accélérations, caméra, timing des combos) a été vérifiée par scripts et captures, pas par une longue
   session de jeu humaine ; les valeurs de `src/config/` sont un premier réglage.
 - Les ennemis à distance ne vérifient pas la ligne de vue avant de lancer.
+- Le village au-delà des falaises est décoratif (sans collisions) : escalader le mur d'enceinte fait tomber, puis
+  réapparaître le joueur.
+- Le clignotement d'impact ne colore pas tous les petits détails des personnages (bandages, plaque, visage).
 - Les bruits de pas sont joués pour tous les personnages, sans atténuation avec la distance.
 - Un seul type de technique spéciale (Rasengan) ; pas de musique d'ambiance ; pas de manette.
 - Le multijoueur est hors périmètre.
