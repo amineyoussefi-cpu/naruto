@@ -3,7 +3,7 @@ import { COMBAT, ENEMIES, MOVEMENT, SIM_DT, WAVES, DEFAULT_SETTINGS, type Settin
 import { EventBus } from '../core/events';
 import { FixedStepper } from '../core/loop';
 import { InputManager, KEY_LABELS } from '../core/input';
-import type { ActorKind, GameState, HudData } from '../core/types';
+import type { ActorKind, CharacterId, GameState, HudData, QteDir } from '../core/types';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
 import { Actor } from './Actor';
 import type { GameContext, SpawnModifiers } from './context';
@@ -15,7 +15,8 @@ import { CameraRig } from '../camera/CameraRig';
 import { EnemyAI } from '../ai/EnemyAI';
 import { WaveManager } from '../ai/WaveManager';
 import { NinjaModel } from '../render/NinjaModel';
-import { LOOKS, NAMES, pickEnemyLook } from '../render/looks';
+import { CHARACTER_LOOKS, NAMES, pickEnemyLook } from '../render/looks';
+import { CHARACTERS } from '../config/characters';
 import { Effects } from '../render/Effects';
 import { buildArena, type ArenaInfo } from '../world/Arena';
 import { AudioSystem } from '../audio/AudioSystem';
@@ -40,6 +41,11 @@ export interface GameApi {
   userGesture(): void;
   /** Menu button feedback sound (also unlocks audio). */
   uiClick(): void;
+  /** Selected playable character; change it from the menu (applies to the next run). */
+  readonly character: CharacterId;
+  selectCharacter(id: CharacterId): void;
+  /** Grab sequence arrow click (UI). Ignored unless a sequence is waiting for input. */
+  qteInput(dir: QteDir): void;
 }
 
 /**
@@ -74,6 +80,8 @@ export class Game implements GameApi {
   private fps = 60;
   private projected = new THREE.Vector3();
   private readonly postfx: PostFX;
+  /** True while the grab sequence owns the (unlocked) cursor. */
+  private qteCursor = false;
 
   static async create(canvasHost: HTMLElement): Promise<Game> {
     return new Game(canvasHost, await PhysicsWorld.create());
@@ -120,6 +128,9 @@ export class Game implements GameApi {
       enemies: () => this.ctx.actors.filter((a) => a.team === 'enemy' && a.alive && !a.removed),
       spawns: { player: this.arena.playerSpawn, enemies: this.arena.enemySpawns },
       modifiers: (a) => this.mods.get(a) ?? { hpMul: 1, dmgMul: 1 },
+      character: this.settings.character,
+      qte: null,
+      qteInputs: [],
     };
     this.combat = this.ctx.combat = new CombatSystem(this.ctx);
     this.camera.attach(this.ctx);
@@ -135,11 +146,12 @@ export class Game implements GameApi {
       else if (this.state === 'paused') this.resume();
     };
     document.addEventListener('pointerlockchange', () => {
-      if (!this.input.pointerLocked && this.state === 'playing') this.pause();
+      // The grab sequence frees the cursor on purpose (clickable arrows): not a pause.
+      if (!this.input.pointerLocked && this.state === 'playing' && !this.qteCursor) this.pause();
     });
     window.addEventListener('blur', () => { if (this.state === 'playing') this.pause(); });
     this.renderer.domElement.addEventListener('click', () => {
-      if (this.state === 'playing' && !this.input.pointerLocked) this.input.requestPointerLock();
+      if (this.state === 'playing' && !this.input.pointerLocked && !this.qteCursor) this.input.requestPointerLock();
     });
     this.events.on('hitStop', (e) => { this.hitStop = Math.max(this.hitStop, e.duration); });
     this.events.on('cameraShake', (e) => this.camera.shake(e.intensity, e.duration));
@@ -165,7 +177,7 @@ export class Game implements GameApi {
       ? { maxHp: COMBAT.player.maxHp, maxChakra: COMBAT.player.maxChakra }
       : { maxHp: Math.round(ENEMIES[kind].maxHp * mods.hpMul), maxChakra: 0 };
     const fighter = new Fighter(stats, COMBAT.guardDamageFactor);
-    const model = new NinjaModel(kind === 'player' ? LOOKS.player : pickEnemyLook(kind));
+    const model = new NinjaModel(kind === 'player' ? CHARACTER_LOOKS[this.settings.character] : pickEnemyLook(kind));
     this.scene.add(model.root);
     const body = this.physics.createCharacter(feet, MOVEMENT.capsuleRadius, MOVEMENT.capsuleHalfHeight);
     const name = kind === 'player' ? 'You' : NAMES[kind][Math.floor(Math.random() * NAMES[kind].length)];
@@ -206,6 +218,27 @@ export class Game implements GameApi {
     this.input.requestPointerLock();
   }
 
+  get character(): CharacterId {
+    return this.ctx.character;
+  }
+
+  /** Swaps the player's model; only between runs (menu / end screens) so a fight never changes character. */
+  selectCharacter(id: CharacterId): void {
+    this.settings.character = id;
+    if (id === this.ctx.character || this.state === 'playing' || this.state === 'paused') return;
+    this.ctx.character = id;
+    const p = this.ctx.player;
+    p.model.dispose();
+    p.model = new NinjaModel(CHARACTER_LOOKS[id]);
+    this.scene.add(p.model.root);
+    p.syncModel(1, 0);
+  }
+
+  qteInput(dir: QteDir): void {
+    const q = this.ctx.qte;
+    if (this.state === 'playing' && q && !q.done) this.ctx.qteInputs.push(dir);
+  }
+
   uiClick(): void {
     this.audio.unlock();
     this.audio.playUiClick();
@@ -238,7 +271,9 @@ export class Game implements GameApi {
   }
 
   applySettings(s: Settings): void {
+    const character = s.character;
     Object.assign(this.settings, s);
+    this.selectCharacter(character);
     this.audio.setVolume(s.masterVolume);
     this.postfx.enabled = s.graphics === 'high';
     this.renderer.shadowMap.enabled = s.graphics === 'high';
@@ -249,6 +284,9 @@ export class Game implements GameApi {
     for (const a of [...this.ctx.actors]) if (a !== this.ctx.player) this.removeActor(a);
     this.ai.clear();
     this.combat.clear();
+    this.ctx.qte = null;
+    this.ctx.qteInputs.length = 0;
+    this.qteCursor = false;
     this.fx.clear();
     this.waves.reset();
     const p = this.ctx.player;
@@ -263,6 +301,8 @@ export class Game implements GameApi {
     this.playerCombat.reset();
     this.playerController.reset(this.arena.playerSpawn);
     p.onWater = false;
+    p.disoriented = 0;
+    p.grabbedBy = null;
     p.beginStep();
     this.camera.reset();
     this.ctx.time = 0;
@@ -285,7 +325,10 @@ export class Game implements GameApi {
     this.playerCombat.update(dt);
     this.playerController.update(dt);
     this.ai.update(dt);
-    for (const a of ctx.actors) a.onWater = a.alive && a.grounded && this.physics.isWater(a.position);
+    for (const a of ctx.actors) {
+      a.onWater = a.alive && a.grounded && this.physics.isWater(a.position);
+      a.disoriented = Math.max(0, a.disoriented - dt);
+    }
     this.combat.update(dt);
     this.fx.update(dt);
     this.waves.update(dt);
@@ -303,10 +346,22 @@ export class Game implements GameApi {
       }
     }
     this.physics.step();
+    this.syncQteCursor();
     if (this.endTimer > 0) {
       this.endTimer -= dt;
       if (this.endTimer <= 0) this.setState(ctx.player.alive ? 'victory' : 'defeat');
     }
+  }
+
+  /** Frees the cursor while a grab sequence waits for arrow clicks; recaptures it when the sequence ends. */
+  private syncQteCursor(): void {
+    const q = this.ctx.qte;
+    const want = !!q && !q.done;
+    if (want === this.qteCursor) return;
+    this.qteCursor = want;
+    this.input.releaseAll(); // no click or key carries over between the arrows and the fight
+    if (want) this.input.exitPointerLock();
+    else this.input.requestPointerLock(); // the last arrow click is the user gesture; else the next canvas click relocks
   }
 
   /** Called every animation frame with real elapsed seconds. */
@@ -355,6 +410,13 @@ export class Game implements GameApi {
     this.postfx?.setSize(w, h);
   }
 
+  /** HUD slot for the character's E technique (cost / cooldown depend on the character). */
+  private specialSlot(cd: (id: 'special', label: string, key: string, total: number, cost: number) => HudData['cooldowns'][number], key: string) {
+    const c = CHARACTERS[this.ctx.character];
+    const cfg = c.special === 'sharingan' ? COMBAT.sharingan : c.special === 'chidori' ? COMBAT.chidori : COMBAT.special;
+    return cd('special', c.specialLabel, key, cfg.cooldown, cfg.chakraCost);
+  }
+
   getHudData(): HudData {
     const p = this.ctx.player;
     const f = p.fighter;
@@ -385,9 +447,11 @@ export class Game implements GameApi {
     }
     const t = this.camera.lockTarget;
     return {
-      player: { hp: f.hp, maxHp: f.maxHp, chakra: f.chakra, maxChakra: f.maxChakra, concentrating: f.concentrating, guarding: f.guarding, climbing: p.climbing, substitution: f.substitution, maxSubstitution: f.maxSubstitution },
+      player: { hp: f.hp, maxHp: f.maxHp, chakra: f.chakra, maxChakra: f.maxChakra, concentrating: f.concentrating, guarding: f.guarding, climbing: p.climbing, substitution: f.substitution, maxSubstitution: f.maxSubstitution, character: this.ctx.character },
+      charge: this.playerCombat.charge,
+      qte: this.ctx.qte,
       cooldowns: [
-        cd('special', 'Rasengan', labels.special, COMBAT.special.cooldown, COMBAT.special.chakraCost),
+        this.specialSlot(cd, labels.special),
         cd('kunai', 'Kunai', labels.kunai.split(' ')[0], COMBAT.kunai.cooldown, 0),
         cd('dodge', 'Esquive', labels.dodge, COMBAT.dodge.cooldown, 0),
       ],

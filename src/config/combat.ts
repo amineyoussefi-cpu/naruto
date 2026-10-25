@@ -59,6 +59,14 @@ export const COMBAT = {
   },
   /** Seconds of invulnerability after respawn. */
   respawnInvulnerable: 1.5,
+  /** Kakashi's Chidori: hold to charge, release to dash THROUGH enemies (piercing, each hit once). Tuned by combat agent. */
+  chidori: { chakraCost: 35, cooldown: 0, minPower: 0.2, fullChargeTime: 1.5, damage: 55, dashSpeed: 30, dashDistance: 12, radius: 1.2 },
+  /** Sasuke's Sharingan genjutsu: enemies in radius are disoriented (cannot target the player). */
+  sharingan: { chakraCost: 60, cooldown: 8, radius: 14, duration: 5, castTime: 0.35 },
+  /** Grab (left + right click) and six-arrow sequence. Tuned by combat agent. */
+  grab: { range: 2.4, coneDeg: 100, arrows: 6, time: 4, damagePerHit: 8, finisherDamage: 50, outro: 0.8 },
+  /** Kunai aim assist around the reticle: screen radius as a fraction of screen height, world range (m). */
+  aimAssist: { screenRadius: 0.12, range: 40 },
   /** Storm-style substitution jutsu: gauge (4 uses when full), spent by pressing dodge while stunned. `animTime`: reappear lock (s). */
   substitution: { max: 100, cost: 25, regenPerSecond: 4, invulnerable: 0.6, distanceBehind: 2.2, animTime: 0.2 },
 } as const;

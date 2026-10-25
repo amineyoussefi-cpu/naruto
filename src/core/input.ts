@@ -1,3 +1,6 @@
+import { ChordDetector } from './chord';
+import { INPUT } from '../config/input';
+
 /**
  * Keyboard + mouse input. Bindings use KeyboardEvent.code (physical key position),
  * so WASD on QWERTY and ZQSD on AZERTY are the same physical keys.
@@ -8,7 +11,9 @@ export type Action =
   | 'sprint' | 'jump' | 'attack' | 'guard' | 'special' | 'kunai'
   | 'concentrate' | 'dodge' | 'lockOn' | 'switchTarget' | 'pause'
   /** Synthetic: forward pressed twice quickly (no key of its own). */
-  | 'boost';
+  | 'boost'
+  /** Synthetic: left + right click together (see ChordDetector). */
+  | 'grab';
 
 export const KEY_BINDINGS: Record<Action, string[]> = {
   forward: ['KeyW', 'ArrowUp'],
@@ -27,10 +32,8 @@ export const KEY_BINDINGS: Record<Action, string[]> = {
   switchTarget: ['Tab', 'WheelUp', 'WheelDown'],
   pause: ['Escape', 'KeyP'],
   boost: [],
+  grab: [],
 };
-
-/** Max delay between two forward presses that counts as a double tap (ms). */
-export const DOUBLE_TAP_MS = 300;
 
 /** Key labels per layout for the help screens (UI is in French). */
 export const KEY_LABELS: Record<'qwerty' | 'azerty', Record<Action, string>> = {
@@ -38,13 +41,13 @@ export const KEY_LABELS: Record<'qwerty' | 'azerty', Record<Action, string>> = {
     forward: 'W', back: 'S', left: 'A', right: 'D', sprint: 'Maj', jump: 'Espace',
     attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'Q / Clic molette',
     concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
-    boost: 'W W (maintenir)',
+    boost: 'W W (maintenir)', grab: 'Clic gauche + droit',
   },
   azerty: {
     forward: 'Z', back: 'S', left: 'Q', right: 'D', sprint: 'Maj', jump: 'Espace',
     attack: 'Clic gauche', guard: 'Clic droit', special: 'E', kunai: 'A / Clic molette',
     concentrate: 'R (maintenir)', dodge: 'C', lockOn: 'F', switchTarget: 'Tab / Molette', pause: 'Échap / P',
-    boost: 'Z Z (maintenir)',
+    boost: 'Z Z (maintenir)', grab: 'Clic gauche + droit',
   },
 };
 
@@ -53,6 +56,7 @@ export class InputManager {
   private pressedQueue = new Set<Action>();
   private codeToActions = new Map<string, Action[]>();
   private lastForwardPress = -Infinity;
+  private readonly chord = new ChordDetector('Mouse0', 'Mouse2', INPUT.grabChordMs);
   private mouseDX = 0;
   private mouseDY = 0;
   private wheel = 0;
@@ -106,12 +110,17 @@ export class InputManager {
     if (!actions) return;
     if (actions.includes('pause')) { this.onPause?.(); return; }
     if (!this.enabled) return;
+    if (this.chord.handles(code) && !this.held.has(code)) {
+      this.held.add(code);
+      if (this.chord.press(code, performance.now())) this.pressedQueue.add('grab');
+      return; // otherwise delivered by consumePressed() once the chord window expires
+    }
     if (!this.held.has(code)) {
       for (const a of actions) this.pressedQueue.add(a);
       if (actions.includes('forward')) {
         // Input timing only (not simulation): a quick second tap means "run faster".
         const now = performance.now();
-        if (now - this.lastForwardPress < DOUBLE_TAP_MS) this.pressedQueue.add('boost');
+        if (now - this.lastForwardPress < INPUT.doubleTapMs) this.pressedQueue.add('boost');
         this.lastForwardPress = now;
       }
     }
@@ -120,11 +129,16 @@ export class InputManager {
 
   private up(code: string): void {
     this.held.delete(code);
+    if (this.chord.release(code)) this.deliver(code); // quick click released inside the chord window
+  }
+
+  private deliver(code: string): void {
+    for (const a of this.codeToActions.get(code) ?? []) this.pressedQueue.add(a);
   }
 
   isHeld(action: Action): boolean {
     if (!this.enabled) return false;
-    return KEY_BINDINGS[action].some((c) => this.held.has(c));
+    return KEY_BINDINGS[action].some((c) => this.held.has(c) && !this.chord.suppressed(c));
   }
 
   /** Movement axes in [-1,1]: x = right, y = forward. */
@@ -137,6 +151,7 @@ export class InputManager {
 
   /** Returns and clears the actions pressed since the last call. Called once per simulation step. */
   consumePressed(): ReadonlySet<Action> {
+    if (this.enabled) for (const code of this.chord.flush(performance.now())) this.deliver(code);
     const out = new Set(this.pressedQueue);
     this.pressedQueue.clear();
     return out;
@@ -153,6 +168,7 @@ export class InputManager {
   releaseAll(): void {
     this.held.clear();
     this.pressedQueue.clear();
+    this.chord.reset();
     this.mouseDX = this.mouseDY = this.wheel = 0;
   }
 

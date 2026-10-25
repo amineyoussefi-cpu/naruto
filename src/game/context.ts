@@ -6,7 +6,7 @@ import type { Actor } from './Actor';
 import type { CameraRig } from '../camera/CameraRig';
 import type { CombatSystem } from '../combat/CombatSystem';
 import type { Effects } from '../render/Effects';
-import type { ActorKind } from '../core/types';
+import type { ActorKind, CharacterId, QteDir, QteState } from '../core/types';
 import type { Settings } from '../config/settings';
 
 /** Stat multipliers applied when spawning an enemy for a given wave. */
@@ -41,4 +41,10 @@ export interface GameContext {
   readonly spawns: { player: THREE.Vector3; enemies: THREE.Vector3[] };
   /** Damage/speed multiplier for an enemy (from its wave). */
   modifiers(actor: Actor): SpawnModifiers;
+  /** Selected playable character (fixed during a run). */
+  character: CharacterId;
+  /** Grab sequence state, owned by combat (null when none). Game/UI read it. */
+  qte: QteState | null;
+  /** Arrow clicks from the UI, queued by Game and consumed by combat on the next simulation step. */
+  qteInputs: QteDir[];
 }

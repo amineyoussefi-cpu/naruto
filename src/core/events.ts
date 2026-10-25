@@ -8,7 +8,17 @@ export interface GameEvents {
   /** An enemy announces an attack; `duration` is the wind-up time. */
   telegraph: { id: number; duration: number };
   chakraFail: { id: number; action: string };
-  technique: { id: number; name: 'special'; position: Vec3Like };
+  /** A technique fires. 'special' = Rasengan (power 0.2..1), 'chidori' (power), 'sharingan' (genjutsu wave). */
+  technique: { id: number; name: 'special' | 'chidori' | 'sharingan'; position: Vec3Like; power?: number };
+  /** Hold-to-charge started / released (power 0..1 = damage scale progress). */
+  chargeStart: { id: number; technique: 'rasengan' | 'chidori'; fullTime: number };
+  chargeRelease: { id: number; technique: 'rasengan' | 'chidori'; power: number };
+  /** Sharingan genjutsu applied to these enemies. */
+  genjutsu: { id: number; targets: number[]; radius: number; duration: number };
+  /** Grab sequence lifecycle. */
+  grabStart: { id: number; targetId: number };
+  qteInput: { id: number; dir: 'up' | 'down' | 'left' | 'right'; correct: boolean; index: number };
+  grabEnd: { id: number; targetId: number; result: 'complete' | 'miss' | 'timeout' | 'interrupted'; hits: number };
   projectileHit: { position: Vec3Like; hitActor: boolean };
   dodge: { id: number };
   /** Double-tap forward: high-speed run started. */

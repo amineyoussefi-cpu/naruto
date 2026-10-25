@@ -46,6 +46,10 @@ export class Actor {
   climbing = false;
   /** Standing on a water surface (walking on it with chakra). Updated by Game each step. */
   onWater = false;
+  /** Genjutsu: seconds of disorientation left (cannot target the player). Decremented each step by Game. */
+  disoriented = 0;
+  /** Id of the actor holding this one in a grab, or null. AI and movement leave a grabbed actor alone. */
+  grabbedBy: number | null = null;
   /** Horizontal normal of the wall being walked on (valid while climbing, kept afterwards for blending out). */
   readonly wallNormal = new THREE.Vector3(0, 0, 1);
   /** Render-only: 0 = upright, 1 = standing on the wall. */
@@ -65,7 +69,7 @@ export class Actor {
     readonly team: Team,
     readonly name: string,
     readonly fighter: Fighter,
-    readonly model: NinjaModel,
+    public model: NinjaModel, // swapped when the player picks another character
     readonly body: CharacterBody,
     readonly radius: number,
     readonly height: number,
@@ -116,6 +120,7 @@ export class Actor {
     const speed = this.climbing ? this.velocity.length() : Math.hypot(this.velocity.x, this.velocity.z);
     this.orientOnWall(frameDt);
     this.model.setFootChakra(this.climbing || this.onWater);
+    this.model.setDazed(this.disoriented > 0 && this.alive);
     this.model.update(frameDt, this.anim, this.animTime, speed);
   }
 

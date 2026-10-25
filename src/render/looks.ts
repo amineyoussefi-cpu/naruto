@@ -1,4 +1,4 @@
-import type { ActorKind } from '../core/types';
+import type { ActorKind, CharacterId } from '../core/types';
 import type { NinjaLook } from './NinjaModel';
 
 /** Colour schemes per ninja archetype (original designs). Owner: characters. */
@@ -31,6 +31,13 @@ export function pickEnemyLook(kind: ActorKind, rng: () => number = Math.random):
   const v = VARIANTS[kind];
   return v[Math.min(v.length - 1, Math.floor(rng() * v.length))];
 }
+
+/** Player looks per playable character. STUB: visuals agent replaces sasuke/kakashi with recognizable looks. */
+export const CHARACTER_LOOKS: Record<CharacterId, NinjaLook> = {
+  naruto: LOOKS.player,
+  sasuke: { ...LOOKS.player, outfit: 0x2a3550, accent: 0xe8e8f0, hair: 0x1a1d2e },
+  kakashi: { ...LOOKS.player, outfit: 0x2c3a5a, accent: 0x4f6a3a, hair: 0xd8dde4 },
+};
 
 /** Display names for enemies (lock-on bar). */
 export const NAMES: Record<Exclude<ActorKind, 'player'>, string[]> = {

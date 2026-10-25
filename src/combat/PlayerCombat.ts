@@ -39,6 +39,9 @@ export class PlayerCombat {
 
   constructor(private readonly ctx: GameContext, private readonly actor: Actor) {}
 
+  /** Active Rasengan/Chidori charge for the HUD (STUB until combat agent implements charging). */
+  get charge(): { technique: 'rasengan' | 'chidori'; level: number } | null { return null; }
+
   /** Current combat move (debug/tests). */
   get currentMove(): Move { return this.move; }
 

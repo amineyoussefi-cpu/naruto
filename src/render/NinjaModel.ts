@@ -924,13 +924,18 @@ export class NinjaModel {
     if (color !== undefined) (this.auraMat.uniforms.color.value as THREE.Color).setHex(color);
   }
   /** Glowing chakra sphere in the right hand (Rasengan wind-up/dash). */
-  setHandOrb(on: boolean): void {
+  /** `charge` 0..1 scales size/brightness; `style` picks Rasengan (blue sphere) or Chidori (lightning). STUB params: visuals agent. */
+  setHandOrb(on: boolean, _charge = 1, _style: 'rasengan' | 'chidori' = 'rasengan'): void {
     this.orb.visible = on;
   }
   /** Blue chakra glow on both soles (wall-walking). */
   setFootChakra(on: boolean): void {
     for (const f of this.footChakra) f.visible = on;
   }
+  /** Genjutsu daze marker over the head (swirl). STUB: visuals agent. */
+  setDazed(_on: boolean): void {}
+  /** Sharingan eyes glow (red). STUB: visuals agent. */
+  setSharingan(_on: boolean): void {}
   /** Guard bubble/pose highlight. */
   setGuard(on: boolean): void {
     this.guardMesh.visible = on;

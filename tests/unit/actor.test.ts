@@ -7,7 +7,7 @@ import type { CharacterBody } from '../../src/physics/PhysicsWorld';
 
 function makeActor() {
   const feet: boolean[] = [];
-  const model = { root: new THREE.Group(), update() {}, setFootChakra: (on: boolean) => feet.push(on) } as unknown as NinjaModel;
+  const model = { root: new THREE.Group(), update() {}, setDazed() {}, setFootChakra: (on: boolean) => feet.push(on) } as unknown as NinjaModel;
   const a = new Actor('player', 'player', 'p', new Fighter({ maxHp: 1, maxChakra: 1 }), model, {} as CharacterBody, 0.4, 1.8);
   return { a, feet };
 }

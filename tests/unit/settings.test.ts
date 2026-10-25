@@ -31,7 +31,7 @@ describe('settingsStore', () => {
 
   it('round-trips valid settings', () => {
     const store = mem();
-    const s = { masterVolume: 0.3, sensitivity: 2.5, invertY: true, layout: 'azerty' as const, showFps: true, graphics: 'low' as const };
+    const s = { masterVolume: 0.3, sensitivity: 2.5, invertY: true, layout: 'azerty' as const, showFps: true, graphics: 'low' as const, character: 'kakashi' as const };
     expect(saveSettings(store, s)).toBe(true);
     expect(loadSettings(store)).toEqual(s);
   });

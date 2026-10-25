@@ -1,4 +1,6 @@
 /** User settings persisted to localStorage. Owner: UI agent. */
+import type { CharacterId } from '../core/types';
+
 export interface Settings {
   masterVolume: number; // 0..1
   sensitivity: number; // 0.2..3
@@ -7,6 +9,8 @@ export interface Settings {
   showFps: boolean;
   /** 'high' = anime post-processing (ink outlines, bloom, speed lines) + shadows; 'low' = direct render. */
   graphics: 'high' | 'low';
+  /** Selected playable character. */
+  character: CharacterId;
 }
 export const DEFAULT_SETTINGS: Settings = {
   masterVolume: 0.7,
@@ -15,6 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   layout: 'auto',
   showFps: false,
   graphics: 'high',
+  character: 'naruto',
 };
 export const SETTINGS_STORAGE_KEY = 'shinobi-arena.settings.v1';
 
