@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { COMBAT } from '../config/combat';
 import { ENEMIES } from '../config/enemies';
 import type { AttackKind } from '../core/types';
+import type { HitResult } from './Fighter';
+import { qteFinish } from './grab';
 import type { Actor } from '../game/Actor';
 import type { GameContext } from '../game/context';
 import { createProjectileMesh, disposeObject } from '../render/meshes';
@@ -45,7 +47,7 @@ export function sphereHitsActor(center: THREE.Vector3, r: number, a: Actor): boo
   return dx * dx + dz * dz <= reach * reach && center.y + r >= a.position.y && center.y - r <= a.position.y + a.height;
 }
 
-const isHeavy = (kind: AttackKind) => kind === 'combo5' || kind === 'special';
+const isHeavy = (kind: AttackKind) => kind === 'combo5' || kind === 'special' || kind === 'chidori' || kind === 'grabFinisher';
 
 /** Hitboxes, projectiles, damage resolution and fighter ticking. Owner: combat agent. */
 export class CombatSystem {
@@ -82,9 +84,9 @@ export class CombatSystem {
   dealDamage(
     source: Actor, target: Actor, damage: number, knockback: number, kind: AttackKind, hitPoint: THREE.Vector3,
     launch = 0, stun?: number,
-  ): void {
+  ): HitResult {
     const res = target.fighter.applyHit({ damage });
-    if (res.ignored) return;
+    if (res.ignored) return res;
     this.lastAttacker.set(target.id, source);
     const ev = this.ctx.events;
     const position = { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z };
@@ -117,6 +119,12 @@ export class CombatSystem {
         : target.team === 'player' ? COMBAT.shake.playerHit : COMBAT.shake.light;
       ev.emit('cameraShake', { intensity: s.intensity, duration: s.duration });
     }
+    return res;
+  }
+
+  /** Removes every live hitbox of `owner` (attack interrupted: genjutsu, grabbed). */
+  cancelHitboxes(owner: Actor): void {
+    this.hitboxes = this.hitboxes.filter((h) => h.spec.owner !== owner);
   }
 
   /** Ticks every fighter, hitboxes and projectiles. */
@@ -184,8 +192,15 @@ export class CombatSystem {
     });
   }
 
-  /** Removes every hitbox and projectile (restart). */
+  /** Removes every hitbox and projectile (restart) and interrupts a grab sequence (victims released). */
   clear(): void {
+    const q = this.ctx.qte;
+    if (q && !q.done) {
+      qteFinish(q, 'interrupted');
+      this.ctx.events.emit('grabEnd', { id: this.ctx.player.id, targetId: q.targetId, result: 'interrupted', hits: q.index });
+    }
+    this.ctx.qte = null;
+    for (const a of this.ctx.actors) a.grabbedBy = null;
     for (const p of this.projectiles) disposeObject(p.mesh);
     this.projectiles = [];
     this.hitboxes = [];

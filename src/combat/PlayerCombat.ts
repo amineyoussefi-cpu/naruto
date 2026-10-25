@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import { COMBAT } from '../config/combat';
-import type { AnimState, AttackKind } from '../core/types';
+import { CHARACTERS } from '../config/characters';
+import type { AnimState, AttackKind, ChargeTechnique, QteDir, QteState } from '../core/types';
 import type { Actor } from '../game/Actor';
 import type { GameContext } from '../game/context';
+import { pickAimTarget } from './aimAssist';
+import { createQte, qteApply, qteFinish, qteTick, randomArrows } from './grab';
 
-export type Move = 'none' | 'attack' | 'throw' | 'special' | 'dodge' | 'dash' | 'substitution';
+export type Move = 'none' | 'attack' | 'throw' | 'special' | 'dodge' | 'dash' | 'substitution' | 'charge' | 'chidori' | 'sharingan' | 'grab';
 const COMBO_KINDS: AttackKind[] = ['combo1', 'combo2', 'combo3', 'combo4', 'combo5'];
 const COMBO_ANIMS: AnimState[] = ['attack1', 'attack2', 'attack3', 'attack4', 'attack5'];
+const STRIKE_ANIMS: Record<QteDir, AnimState> = { up: 'strikeUp', down: 'strikeDown', left: 'strikeLeft', right: 'strikeRight' };
+const chargeCfg = (t: ChargeTechnique) => (t === 'rasengan' ? COMBAT.special : COMBAT.chidori);
 
 /**
  * Turns player input into combat actions: homing 5-hit combo, chakra dash, substitution, kunai, special,
@@ -23,30 +28,58 @@ export class PlayerCombat {
   private attackBuffer = 0;
   /** Special/kunai presses made during another move fire when it ends (or cancel combo recovery). */
   private specialBuffer = 0;
+  /** Set when a technique starts from the E key; cleared on release so one hold fires exactly one technique. */
+  private specialLatch = false;
   private kunaiBuffer = 0;
   private concentrating = false;
   /** Concentration state of the previous step (for the one-shot start event). */
   private prevConcentrating = false;
   /** Set when concentration is interrupted by a hit; cleared once the key is released. */
   private concentrateLocked = false;
-  private visuals = { guard: false, aura: false, orb: false };
+  private visuals = { guard: false, aura: false, orb: false, sharingan: false };
+  /** Technique being charged (move 'charge'). */
+  private chargeTech: ChargeTechnique = 'rasengan';
+  /** Power (minPower..1) of the released Rasengan / Chidori. */
+  private power = 1;
+  /** Chidori dash: unit direction, metres left, enemies already hit this activation. */
+  private readonly dashDir = new THREE.Vector3();
+  private dashLeft = 0;
+  private readonly dashHit = new Set<number>();
+  /** Seconds left on the Sharingan eye effect (cast + genjutsu duration). */
+  private sharinganTime = 0;
+  /** Grab: held victim, its sequence, outro timer before ctx.qte is cleared, player lock after the grab ends. */
+  private grabTarget: Actor | null = null;
+  private qte: QteState | null = null;
+  private qteOutro = 0;
+  private recovery = 0;
   /** Homing target of the current combo hit / chakra dash (null = straight lunge / burst). */
   private target: Actor | null = null;
   /** Seconds spent closing in on the homing target before the windup clock starts. */
   private approach = 0;
   private readonly forced = new THREE.Vector3();
   private readonly tmp = new THREE.Vector3();
+  private readonly tmp2 = new THREE.Vector3();
 
   constructor(private readonly ctx: GameContext, private readonly actor: Actor) {}
 
-  /** Active Rasengan/Chidori charge for the HUD (STUB until combat agent implements charging). */
-  get charge(): { technique: 'rasengan' | 'chidori'; level: number } | null { return null; }
+  /** Active Rasengan/Chidori charge for the HUD (level 0..1 = progress to full power), null when not charging. */
+  get charge(): { technique: ChargeTechnique; level: number } | null {
+    return this.move === 'charge' ? { technique: this.chargeTech, level: this.chargeLevel() } : null;
+  }
+
+  private chargeLevel(): number {
+    return Math.min(1, this.t / chargeCfg(this.chargeTech).fullChargeTime);
+  }
 
   /** Current combat move (debug/tests). */
   get currentMove(): Move { return this.move; }
 
   update(dt: number): void {
     const a = this.actor, f = a.fighter, c = a.control, input = this.ctx.input;
+    const qteInputs = this.ctx.qteInputs.splice(0); // consumed every step, even when no grab is running
+    if (this.qteOutro > 0 && (this.qteOutro -= dt) <= 0 && this.ctx.qte === this.qte) this.ctx.qte = this.qte = null;
+    if (this.sharinganTime > 0 && (this.sharinganTime -= dt) <= 0) this.setSharingan(false);
+    if (this.grabTarget && this.ctx.qte !== this.qte) this.dropGrab(); // cleared by CombatSystem.clear()
     a.resetControl();
     this.prevConcentrating = this.concentrating;
     if (this.concentrating && !f.concentrating) this.concentrateLocked = true; // a hit cleared it
@@ -57,6 +90,7 @@ export class PlayerCombat {
     if (this.ctx.pressed.has('attack')) this.attackBuffer = COMBAT.inputBuffer;
     else this.attackBuffer = Math.max(0, this.attackBuffer - dt);
     this.specialBuffer = this.ctx.pressed.has('special') ? COMBAT.inputBuffer : Math.max(0, this.specialBuffer - dt);
+    if (!input.isHeld('special') && !this.ctx.pressed.has('special')) this.specialLatch = false;
     this.kunaiBuffer = this.ctx.pressed.has('kunai') ? COMBAT.inputBuffer : Math.max(0, this.kunaiBuffer - dt);
 
     if (a.alive && f.stunned && this.ctx.pressed.has('dodge')) this.trySubstitution();
@@ -82,7 +116,7 @@ export class PlayerCombat {
     if (this.move === 'attack') {
       const hit = COMBAT.combo[this.comboIndex];
       const inRecovery = this.t >= hit.windup + hit.active;
-      const wantsTechnique = this.specialBuffer > 0 || (this.kunaiBuffer > 0 && f.cooldownReady('kunai'));
+      const wantsTechnique = this.wantsSpecial() || (this.kunaiBuffer > 0 && f.cooldownReady('kunai')) || this.ctx.pressed.has('grab');
       const wantsDash = this.ctx.pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range) !== null;
       if (inRecovery && ((this.ctx.pressed.has('dodge') && f.cooldownReady('dodge')) || wantsTechnique || wantsDash)) {
         this.endMove();
@@ -95,8 +129,9 @@ export class PlayerCombat {
     // Dash-cancel: attacking during a chakra dash starts the combo right away.
     if (this.move === 'dash' && this.attackBuffer > 0) this.endMove();
     if (this.move === 'none') this.startFromInput();
-    this.runMove(dt);
-    this.setVisuals(f.guarding, f.concentrating, this.move === 'special');
+    this.runMove(dt, qteInputs);
+    this.setVisuals(f.guarding, f.concentrating);
+    this.syncOrb();
   }
 
   /** True while the player is climbing a wall is decided by movement; combat reads actor.climbing. */
@@ -107,11 +142,20 @@ export class PlayerCombat {
     this.comboIndex = 0;
     this.comboTimer = 0;
     this.attackBuffer = this.specialBuffer = this.kunaiBuffer = 0;
+    this.specialLatch = false;
     this.target = null;
     this.approach = 0;
     this.concentrating = false;
     this.concentrateLocked = false;
-    this.setVisuals(false, false, false);
+    if (this.grabTarget && this.ctx.qte === this.qte) this.endGrab();
+    this.dropGrab();
+    if (this.ctx.qte === this.qte) this.ctx.qte = null;
+    this.qte = null;
+    this.qteOutro = this.recovery = 0;
+    this.sharinganTime = 0;
+    this.setSharingan(false);
+    this.setVisuals(false, false);
+    this.syncOrb();
   }
 
   private startFromInput(): void {
@@ -119,18 +163,12 @@ export class PlayerCombat {
     if (pressed.has('dodge') && f.cooldownReady('dodge')) return this.startDodge();
     // Shift only chakra-dashes when there is someone to rush at; otherwise it is a free sprint (movement).
     if (pressed.has('sprint') && f.cooldownReady('dash') && this.findTarget(COMBAT.chakraDash.range)) return this.startDash();
-    if (this.specialBuffer > 0) {
+    if (pressed.has('grab') && this.ctx.qte === null) return this.startGrab();
+    if (this.wantsSpecial()) {
       this.specialBuffer = 0;
-      if (!f.cooldownReady('special')) return;
-      if (!f.trySpendChakra(COMBAT.special.chakraCost)) {
-        this.ctx.events.emit('chakraFail', { id: a.id, action: 'special' });
-        return;
-      }
-      f.startCooldown('special', COMBAT.special.cooldown);
-      this.begin('special', 'special');
-      this.faceTarget();
-      this.ctx.events.emit('attackStart', { id: a.id, kind: 'special', position: this.pos() });
-      return;
+      this.specialLatch = true;
+      const special = CHARACTERS[this.ctx.character].special;
+      return special === 'sharingan' ? this.startSharingan() : this.startCharge(special);
     }
     if (this.kunaiBuffer > 0 && f.cooldownReady('kunai')) {
       this.kunaiBuffer = 0;
@@ -158,7 +196,7 @@ export class PlayerCombat {
     }
   }
 
-  private runMove(dt: number): void {
+  private runMove(dt: number, qteInputs: QteDir[]): void {
     const a = this.actor, c = a.control;
     if (this.move === 'none') return;
     c.allowMove = c.allowJump = false;
@@ -195,6 +233,24 @@ export class PlayerCombat {
         this.throwKunai();
       }
       if (this.t >= k.windup + k.recovery) this.endMove();
+    } else if (this.move === 'charge') {
+      const cfg = chargeCfg(this.chargeTech);
+      c.allowMove = true; // slow walk while charging (no jump)
+      c.moveFactor = cfg.chargeMoveFactor;
+      if (!this.ctx.input.isHeld('special') || this.t >= cfg.maxHoldTime) this.releaseCharge();
+    } else if (this.move === 'chidori') {
+      c.passThroughActors = true; // pierce through enemies; walls still stop the dash
+      this.runChidori(dt);
+    } else if (this.move === 'sharingan') {
+      c.forcedVelocity = this.forced.set(0, 0, 0);
+      if (this.t >= COMBAT.sharingan.castTime) {
+        this.applyGenjutsu();
+        this.endMove();
+      }
+    } else if (this.move === 'grab') {
+      c.forcedVelocity = this.forced.set(0, 0, 0);
+      if (this.grabTarget) this.updateGrab(this.grabTarget, qteInputs, dt);
+      else if (this.t >= this.recovery) this.endMove();
     } else if (this.move === 'special') {
       const s = COMBAT.special;
       if (this.t < s.windup) {
@@ -203,11 +259,13 @@ export class PlayerCombat {
       } else {
         if (!this.fired) {
           this.fired = true;
+          const p = this.power;
           this.ctx.combat.spawnHitbox({
             owner: a, kind: 'special', forwardOffset: s.forwardOffset, heightOffset: COMBAT.hitboxHeight,
-            radius: s.radius, duration: s.dashTime, damage: s.damage, knockback: s.knockback,
+            radius: s.radius * (s.minRadiusScale + (1 - s.minRadiusScale) * p), duration: s.dashTime,
+            damage: s.damage * p, knockback: s.knockback * p,
           });
-          this.ctx.events.emit('technique', { id: a.id, name: 'special', position: this.pos() });
+          this.ctx.events.emit('technique', { id: a.id, name: 'special', position: this.pos(), power: p });
         }
         c.forcedVelocity = this.forced.copy(fwd).multiplyScalar(s.dashSpeed);
         if (this.t >= s.windup + s.dashTime) this.endMove();
@@ -230,6 +288,192 @@ export class PlayerCombat {
       c.forcedVelocity = this.forced.set(0, 0, 0);
       if (this.t >= COMBAT.substitution.animTime) this.endMove();
     }
+  }
+
+  /** Rasengan / Chidori: hold to charge; chakra is paid on release (a tap releases at once at minPower). */
+  /** E pressed recently, or still held after another move ended (holding E always charges as soon as possible). */
+  private wantsSpecial(): boolean {
+    return !this.specialLatch && (this.specialBuffer > 0 || this.ctx.input.isHeld('special'));
+  }
+
+  private startCharge(tech: ChargeTechnique): void {
+    this.chargeTech = tech;
+    this.begin('charge', 'charge');
+    this.faceTarget();
+    this.ctx.events.emit('chargeStart', { id: this.actor.id, technique: tech, fullTime: chargeCfg(tech).fullChargeTime });
+  }
+
+  private releaseCharge(): void {
+    const a = this.actor, tech = this.chargeTech, cfg = chargeCfg(tech), ev = this.ctx.events;
+    const level = this.chargeLevel();
+    if (!a.fighter.trySpendChakra(cfg.chakraCost)) {
+      ev.emit('chakraFail', { id: a.id, action: 'special' });
+      this.endMove();
+      return;
+    }
+    this.power = cfg.minPower + (1 - cfg.minPower) * level;
+    this.faceTarget();
+    ev.emit('chargeRelease', { id: a.id, technique: tech, power: this.power });
+    if (tech === 'rasengan') {
+      this.begin('special', 'special');
+      ev.emit('attackStart', { id: a.id, kind: 'special', position: this.pos() });
+      return;
+    }
+    const d = COMBAT.chidori;
+    a.forward(this.dashDir);
+    this.dashLeft = d.dashDistance * (d.distanceMinScale + (1 - d.distanceMinScale) * this.power);
+    this.dashHit.clear();
+    this.begin('chidori', 'chidori');
+    ev.emit('attackStart', { id: a.id, kind: 'chidori', position: this.pos() });
+    ev.emit('technique', { id: a.id, name: 'chidori', position: this.pos(), power: this.power });
+  }
+
+  /** Piercing dash: sweeps enemies along this step's path (each hit once), stops before world obstacles. */
+  private runChidori(dt: number): void {
+    const a = this.actor, d = COMBAT.chidori, dir = this.dashDir;
+    a.velocity.y = 0;
+    let step = Math.min(d.dashSpeed * dt, this.dashLeft);
+    const from = this.tmp2.copy(a.position).setY(a.position.y + COMBAT.hitboxHeight);
+    const wall = this.ctx.physics.raycast(from, dir, step + a.radius + d.wallMargin, { worldOnly: true });
+    if (wall) step = Math.max(0, wall.distance - a.radius - d.wallMargin);
+    const y = a.position.y + COMBAT.hitboxHeight;
+    for (const e of this.ctx.enemies()) {
+      if (this.dashHit.has(e.id) || e.removed) continue;
+      const px = e.position.x - a.position.x, pz = e.position.z - a.position.z;
+      const along = Math.max(0, Math.min(step, px * dir.x + pz * dir.z));
+      const qx = px - dir.x * along, qz = pz - dir.z * along, reach = d.radius + e.radius;
+      if (qx * qx + qz * qz > reach * reach || y + d.radius < e.position.y || y - d.radius > e.position.y + e.height) continue;
+      this.dashHit.add(e.id);
+      const res = this.ctx.combat.dealDamage(a, e, d.damage * this.power, 0, 'chidori', e.chest(), 0, d.stun);
+      if (res.ignored) continue;
+      const side = px * dir.z - pz * dir.x >= 0 ? 1 : -1; // push away from the path, to the enemy's side
+      e.knockback.x += dir.z * side * d.knockback;
+      e.knockback.z += -dir.x * side * d.knockback;
+    }
+    this.dashLeft -= step;
+    a.control.forcedVelocity = this.forced.copy(dir).multiplyScalar(step / dt);
+    if (wall || this.dashLeft <= 1e-6) this.endMove();
+  }
+
+  private startSharingan(): void {
+    const a = this.actor, f = a.fighter, s = COMBAT.sharingan;
+    if (!f.cooldownReady('special')) return;
+    if (!f.trySpendChakra(s.chakraCost)) {
+      this.ctx.events.emit('chakraFail', { id: a.id, action: 'special' });
+      return;
+    }
+    f.startCooldown('special', s.cooldown);
+    this.begin('sharingan', 'sharingan');
+    this.faceTarget();
+    this.sharinganTime = s.castTime + s.duration;
+    this.setSharingan(true);
+  }
+
+  private applyGenjutsu(): void {
+    const a = this.actor, s = COMBAT.sharingan;
+    const targets = this.ctx.enemies().filter((e) => !e.removed && e.position.distanceTo(a.position) <= s.radius);
+    for (const e of targets) {
+      e.disoriented = s.duration;
+      this.ctx.combat.cancelHitboxes(e);
+    }
+    this.ctx.events.emit('genjutsu', { id: a.id, targets: targets.map((e) => e.id), radius: s.radius, duration: s.duration });
+    this.ctx.events.emit('technique', { id: a.id, name: 'sharingan', position: this.pos() });
+  }
+
+  /** Grab: nearest valid enemy in the front cone (lock target preferred), else a whiff. */
+  private startGrab(): void {
+    const a = this.actor, g = COMBAT.grab;
+    const t = this.findGrabTarget();
+    this.begin('grab', 'grabHold');
+    this.recovery = g.whiffTime;
+    if (!t) return;
+    this.grabTarget = t;
+    t.grabbedBy = a.id;
+    this.ctx.combat.cancelHitboxes(t);
+    this.faceActor(t);
+    this.qte = this.ctx.qte = createQte(t.id, randomArrows(g.arrows), g.time);
+    this.qteOutro = 0;
+    a.fighter.setInvulnerable(g.invulnerablePad);
+    this.holdVictim(t);
+    this.ctx.events.emit('grabStart', { id: a.id, targetId: t.id });
+  }
+
+  private findGrabTarget(): Actor | null {
+    const a = this.actor, g = COMBAT.grab;
+    const cosHalf = Math.cos(((g.coneDeg / 2) * Math.PI) / 180);
+    const yaw = this.ctx.camera.yaw, cx = Math.sin(yaw), cz = Math.cos(yaw);
+    const px = Math.sin(a.yaw), pz = Math.cos(a.yaw);
+    const dist = (e: Actor) => Math.hypot(e.position.x - a.position.x, e.position.z - a.position.z);
+    const valid = (e: Actor) => {
+      if (!e.alive || e.removed || e.grabbedBy !== null || e.team === a.team) return false;
+      const dx = e.position.x - a.position.x, dz = e.position.z - a.position.z, d = Math.hypot(dx, dz);
+      return d <= g.range && (d < 1e-3 || (dx * px + dz * pz) / d >= cosHalf || (dx * cx + dz * cz) / d >= cosHalf);
+    };
+    const lock = this.lockTarget();
+    if (lock && valid(lock)) return lock;
+    let best: Actor | null = null;
+    for (const e of this.ctx.enemies()) if (valid(e) && (!best || dist(e) < dist(best))) best = e;
+    return best;
+  }
+
+  private updateGrab(t: Actor, inputs: QteDir[], dt: number): void {
+    const a = this.actor, g = COMBAT.grab, q = this.qte;
+    if (!q) return this.dropGrab();
+    a.fighter.setInvulnerable(g.invulnerablePad);
+    for (const dir of inputs) {
+      if (!t.alive) break;
+      const r = qteApply(q, dir);
+      if (r === 'ignored') break;
+      this.ctx.events.emit('qteInput', { id: a.id, dir, correct: r !== 'miss', index: r === 'miss' ? q.index : q.index - 1 });
+      if (r === 'miss') break;
+      const i = q.index - 1;
+      a.setAnim(r === 'complete' ? 'grabFinisher' : STRIKE_ANIMS[dir], true);
+      // Strikes never kill: the finisher always gets to land (and the completion bonus matters).
+      const strike = Math.min(g.damagePerHit * (1 + g.damageRamp * i), Math.max(0, t.fighter.hp - 1));
+      if (strike > 0) this.ctx.combat.dealDamage(a, t, strike, g.strikeKnockback, 'grabStrike', t.chest(), 0, g.strikeStun);
+      if (r === 'complete' && t.alive) {
+        t.grabbedBy = null; // released before the launch so movement takes over
+        this.ctx.combat.dealDamage(a, t, g.finisherDamage, g.finisherKnockback, 'grabFinisher', t.chest(), g.finisherLaunch, g.releaseStun);
+      }
+    }
+    if (!q.done && (!t.alive || t.removed)) qteFinish(q, 'interrupted');
+    if (!q.done) qteTick(q, dt);
+    if (q.done) return this.endGrab();
+    this.holdVictim(t);
+  }
+
+  /** Keeps the victim in front of the player, facing it, stunned (leftover stun = release stun). */
+  private holdVictim(t: Actor): void {
+    const a = this.actor, g = COMBAT.grab;
+    const p = this.tmp2.copy(a.position).addScaledVector(a.forward(this.tmp), g.holdDistance);
+    this.ctx.physics.teleport(t.body, p);
+    t.position.copy(p);
+    t.velocity.set(0, 0, 0);
+    t.yaw = a.yaw + Math.PI;
+    t.fighter.setStun(g.releaseStun);
+    t.setAnim('grabbed');
+  }
+
+  /** Ends the running sequence (default 'interrupted'), emits grabEnd, releases the victim and starts the outro. */
+  private endGrab(): void {
+    const q = this.qte, t = this.grabTarget, g = COMBAT.grab;
+    if (!q || !t) return this.dropGrab();
+    qteFinish(q, 'interrupted');
+    const result = q.result as 'complete' | 'miss' | 'timeout' | 'interrupted';
+    this.ctx.events.emit('grabEnd', { id: this.actor.id, targetId: q.targetId, result, hits: q.index });
+    if (t.grabbedBy === this.actor.id) t.grabbedBy = null;
+    if (t.alive && result !== 'complete') t.setAnim('hit', true);
+    this.grabTarget = null;
+    this.qteOutro = g.outro;
+    this.recovery = result === 'complete' ? g.finisherRecovery : g.missRecovery;
+    this.t = 0;
+  }
+
+  /** Forgets the grab without events (sequence already cleaned up elsewhere). */
+  private dropGrab(): void {
+    if (this.grabTarget && this.grabTarget.grabbedBy === this.actor.id) this.grabTarget.grabbedBy = null;
+    this.grabTarget = null;
+    if (this.move === 'grab') this.endMove();
   }
 
   private startAttack(index: number): void {
@@ -350,12 +594,21 @@ export class PlayerCombat {
   }
 
   private throwKunai(): void {
-    const a = this.actor, k = COMBAT.kunai;
-    const lock = this.lockTarget();
-    if (lock) this.faceActor(lock);
-    else a.yaw = this.ctx.camera.yaw;
+    const a = this.actor, k = COMBAT.kunai, cam = this.ctx.camera, physics = this.ctx.physics;
+    const target = this.lockTarget() ?? pickAimTarget({
+      camera: cam.camera, origin: a.chest(), forward: new THREE.Vector3(Math.sin(cam.yaw), 0, Math.cos(cam.yaw)),
+      candidates: this.ctx.enemies(), range: COMBAT.aimAssist.range, screenRadius: COMBAT.aimAssist.screenRadius,
+      lineOfSight: (from, to) => {
+        const d = to.clone().sub(from), len = d.length();
+        return len < 1e-6 || !physics.raycast(from, d.divideScalar(len), len, { worldOnly: true });
+      },
+    });
+    if (target) this.faceActor(target);
+    else a.yaw = cam.yaw;
     const origin = a.chest().addScaledVector(a.forward(this.tmp), k.spawnForward);
-    const dir = lock ? lock.chest().sub(origin) : a.forward();
+    // No target: toward the reticle (camera forward, kunai max range ahead of the camera).
+    const dir = target ? target.chest().sub(origin)
+      : cam.camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(k.maxRange).add(cam.camera.position).sub(origin);
     this.ctx.combat.spawnProjectile({
       owner: a, kind: 'kunai', origin, direction: dir.normalize(), speed: k.speed, damage: k.damage,
       radius: k.radius, maxRange: k.maxRange, knockback: k.knockback, visual: 'kunai',
@@ -375,13 +628,19 @@ export class PlayerCombat {
     this.fired = false;
   }
 
-  /** Stun, death or climbing: drop the current action. Its hitbox dies in CombatSystem. */
+  /** Stun, death or climbing: drop the current action (a charge is cancelled free). Its hitbox dies in CombatSystem. */
   private cancel(): void {
     if (this.move === 'attack') this.comboIndex = 0;
+    if (this.grabTarget) this.endGrab();
+    if (this.move === 'sharingan') {
+      this.sharinganTime = 0;
+      this.setSharingan(false);
+    }
     this.endMove();
     this.target = null;
     this.attackBuffer = 0;
-    this.setVisuals(false, false, false);
+    this.setVisuals(false, false);
+    this.syncOrb();
   }
 
   /** Lock target, else the nearest living enemy within `COMBAT.autoFaceRange`. */
@@ -412,10 +671,22 @@ export class PlayerCombat {
     return { x: p.x, y: p.y, z: p.z };
   }
 
-  private setVisuals(guard: boolean, aura: boolean, orb: boolean): void {
+  private setVisuals(guard: boolean, aura: boolean): void {
     const v = this.visuals, m = this.actor.model;
     if (v.guard !== guard) m.setGuard((v.guard = guard));
     if (v.aura !== aura) m.setAura((v.aura = aura));
-    if (v.orb !== orb) m.setHandOrb((v.orb = orb));
+  }
+
+  /** Hand orb while charging (level = progress) and during the Rasengan / Chidori dash (level = power). */
+  private syncOrb(): void {
+    const m = this.actor.model, mv = this.move;
+    const style = mv === 'charge' ? this.chargeTech : mv === 'special' ? 'rasengan' : mv === 'chidori' ? 'chidori' : null;
+    if (style) m.setHandOrb(true, mv === 'charge' ? this.chargeLevel() : this.power, style);
+    else if (this.visuals.orb) m.setHandOrb(false);
+    this.visuals.orb = style !== null;
+  }
+
+  private setSharingan(on: boolean): void {
+    if (this.visuals.sharingan !== on) this.actor.model.setSharingan((this.visuals.sharingan = on));
   }
 }

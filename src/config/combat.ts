@@ -6,7 +6,8 @@
 export const COMBAT = {
   player: {
     maxHp: 200,
-    maxChakra: 100,
+    /** Tripled in v4 (was 100); regen rates in CHAKRA scaled ×3 so refills take as long as before. */
+    maxChakra: 300,
   },
   /** Fraction of damage that still goes through when guarding. */
   guardDamageFactor: 0.25,
@@ -36,9 +37,17 @@ export const COMBAT = {
   /** `windup`: release delay, `recovery`: lock after release, `spawnForward`: spawn distance in front of the chest (m). */
   kunai: { damage: 8, speed: 34, cooldown: 0.4, maxRange: 40, radius: 0.25, knockback: 1, windup: 0.05, recovery: 0.15, spawnForward: 0.5 },
   /** Storm chakra dash (Shift tap): homing rush at a target within `range`, else a forward `burstTime` burst. */
-  chakraDash: { cost: 8, range: 25, speed: 26, stopDistance: 1.6, maxDuration: 1.2, burstTime: 0.3, cooldown: 0.35 },
-  /** Rasengan-like special: dash forward with a chakra sphere, AoE on contact. */
-  special: { damage: 45, chakraCost: 35, cooldown: 6, windup: 0.35, dashSpeed: 24, dashTime: 0.35, radius: 2.2, knockback: 12, forwardOffset: 0.8 },
+  chakraDash: { cost: 12, range: 25, speed: 26, stopDistance: 1.6, maxDuration: 1.2, burstTime: 0.3, cooldown: 0.35 },
+  /**
+   * Naruto's Rasengan: hold E to charge (no cooldown), release to dash with the sphere. Chakra is paid on release.
+   * power = lerp(minPower, 1, hold / fullChargeTime); damage and knockback × power, radius × lerp(minRadiusScale, 1, power).
+   * `windup`: short pause between release and the dash (NinjaModel syncs the thrust on it). `maxHoldTime`: auto-release (s).
+   * `chargeMoveFactor`: locomotion speed multiplier while charging (slow walk, no jump).
+   */
+  special: {
+    damage: 60, chakraCost: 45, cooldown: 0, windup: 0.1, dashSpeed: 24, dashTime: 0.35, radius: 2.2, knockback: 14, forwardOffset: 0.8,
+    minPower: 0.2, fullChargeTime: 1.5, maxHoldTime: 2.5, minRadiusScale: 0.6, chargeMoveFactor: 0.35,
+  },
   dodge: { speed: 20, duration: 0.3, invulnerable: 0.25, cooldown: 0.7 },
   hitStun: 0.35,
   /** Knockback multiplier on a guarded hit. */
@@ -59,12 +68,29 @@ export const COMBAT = {
   },
   /** Seconds of invulnerability after respawn. */
   respawnInvulnerable: 1.5,
-  /** Kakashi's Chidori: hold to charge, release to dash THROUGH enemies (piercing, each hit once). Tuned by combat agent. */
-  chidori: { chakraCost: 35, cooldown: 0, minPower: 0.2, fullChargeTime: 1.5, damage: 55, dashSpeed: 30, dashDistance: 12, radius: 1.2 },
+  /**
+   * Kakashi's Chidori: same charge flow as the Rasengan, release = piercing dash of dashDistance × lerp(distanceMinScale, 1, power) m
+   * at dashSpeed (m/s) through enemies (each hit once per dash, damage × power). `radius`: sweep radius around the path (m),
+   * `knockback`: sideways push (m/s), `stun`: hit stun (s), `wallMargin`: stop this far before a wall (m).
+   */
+  chidori: {
+    chakraCost: 50, cooldown: 0, minPower: 0.2, fullChargeTime: 1.5, maxHoldTime: 2.5, chargeMoveFactor: 0.35,
+    damage: 60, dashSpeed: 30, dashDistance: 12, distanceMinScale: 0.6, radius: 1.2, knockback: 4, stun: 0.6, wallMargin: 0.1,
+  },
   /** Sasuke's Sharingan genjutsu: enemies in radius are disoriented (cannot target the player). */
-  sharingan: { chakraCost: 60, cooldown: 8, radius: 14, duration: 5, castTime: 0.35 },
-  /** Grab (left + right click) and six-arrow sequence. Tuned by combat agent. */
-  grab: { range: 2.4, coneDeg: 100, arrows: 6, time: 4, damagePerHit: 8, finisherDamage: 50, outro: 0.8 },
+  sharingan: { chakraCost: 80, cooldown: 8, radius: 14, duration: 5, castTime: 0.35 },
+  /**
+   * Grab (left + right click) and six-arrow sequence. `time`: whole sequence (s); hit i deals damagePerHit × (1 + damageRamp·i);
+   * `holdDistance`: victim held this far in front (m); `strikeStun`/`releaseStun`: victim stun (s); `strikeKnockback`: tiny push;
+   * finisher: big damage + `finisherKnockback` + `finisherLaunch` (m/s up); `outro`: qte kept visible after the end (s);
+   * `invulnerablePad`: player invulnerability refreshed each held step (s, > one step);
+   * `whiffTime`/`missRecovery`/`finisherRecovery`: player lock after a whiff / failed / completed sequence (s).
+   */
+  grab: {
+    range: 2.4, coneDeg: 100, arrows: 6, time: 4, damagePerHit: 8, damageRamp: 0.25, finisherDamage: 50, outro: 0.8,
+    holdDistance: 1.1, strikeStun: 0.5, releaseStun: 0.6, strikeKnockback: 0.3, finisherKnockback: 14, finisherLaunch: 10,
+    invulnerablePad: 0.1, whiffTime: 0.35, missRecovery: 0.3, finisherRecovery: 0.5,
+  },
   /** Kunai aim assist around the reticle: screen radius as a fraction of screen height, world range (m). */
   aimAssist: { screenRadius: 0.12, range: 40 },
   /** Storm-style substitution jutsu: gauge (4 uses when full), spent by pressing dodge while stunned. `animTime`: reappear lock (s). */

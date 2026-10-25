@@ -158,3 +158,14 @@ describe('Fighter cooldowns and pause', () => {
     expect(f.chakra).toBe(100);
   });
 });
+
+describe('chakra v4', () => {
+  it('pool is tripled and a passive refill takes about as long as before (100 / 4 per s)', () => {
+    expect(COMBAT.player.maxChakra).toBe(300);
+    expect(COMBAT.player.maxChakra / CHAKRA.regenPerSecond).toBeCloseTo(100 / 4, 0);
+    expect(COMBAT.player.maxChakra / CHAKRA.concentrateRegenPerSecond).toBeCloseTo(100 / 30, 0);
+    // several techniques per full bar
+    expect(COMBAT.player.maxChakra / COMBAT.sharingan.chakraCost).toBeGreaterThanOrEqual(3);
+    expect(COMBAT.player.maxChakra / COMBAT.special.chakraCost).toBeGreaterThanOrEqual(6);
+  });
+});

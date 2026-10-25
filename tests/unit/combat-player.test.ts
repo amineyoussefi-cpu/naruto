@@ -10,9 +10,10 @@ import type { GameContext } from '../../src/game/context';
 import type { NinjaModel } from '../../src/render/NinjaModel';
 import type { CharacterBody } from '../../src/physics/PhysicsWorld';
 import { COMBAT } from '../../src/config/combat';
+import type { CharacterId } from '../../src/core/types';
 
 const DT = 1 / 60;
-const model = { flash() {}, setAura() {}, setGuard() {}, setHandOrb() {} } as unknown as NinjaModel;
+const model = { flash() {}, setAura() {}, setGuard() {}, setHandOrb() {}, setSharingan() {}, setDazed() {} } as unknown as NinjaModel;
 
 function enemy(x: number, z: number, hp = 500): Actor {
   const e = new Actor('melee', 'enemy', 'e', new Fighter({ maxHp: hp, maxChakra: 0 }), model, {} as CharacterBody, 0.4, 1.8);
@@ -21,21 +22,24 @@ function enemy(x: number, z: number, hp = 500): Actor {
   return e;
 }
 
-/** `walls`: raycast directions (unit x/z) reported as blocked. */
-function setup(enemies: Actor[] = [], walls: { x: number; z: number }[] = []) {
-  const p = new Actor('player', 'player', 'p', new Fighter({ maxHp: 100, maxChakra: 100 }), model, {} as CharacterBody, 0.4, 1.8);
+type Ray = (o: THREE.Vector3, d: THREE.Vector3, max: number) => { distance: number } | null;
+
+/** `walls`: raycast directions (unit x/z) reported as blocked; `raycast` overrides it. */
+function setup(enemies: Actor[] = [], walls: { x: number; z: number }[] = [], opts: { character?: CharacterId; raycast?: Ray; chakra?: number } = {}) {
+  const p = new Actor('player', 'player', 'p', new Fighter({ maxHp: 100, maxChakra: opts.chakra ?? 100 }), model, {} as CharacterBody, 0.4, 1.8);
   p.grounded = true;
   const held = new Set<Action>();
   const events = new EventBus();
   const ctx = {
     scene: new THREE.Scene(), events, actors: [p, ...enemies], player: p, pressed: new Set<Action>(),
     physics: {
-      raycast: (_o: THREE.Vector3, d: THREE.Vector3) => (walls.some((w) => Math.abs(w.x - d.x) < 1e-6 && Math.abs(w.z - d.z) < 1e-6) ? { distance: 0.5 } : null),
+      raycast: opts.raycast ?? ((_o: THREE.Vector3, d: THREE.Vector3) => (walls.some((w) => Math.abs(w.x - d.x) < 1e-6 && Math.abs(w.z - d.z) < 1e-6) ? { distance: 0.5 } : null)),
       teleport: () => {},
     },
     input: { isHeld: (a: Action) => held.has(a), moveAxes: () => ({ x: 0, y: 0 }) },
-    camera: { yaw: 0, lockTarget: null },
+    camera: { yaw: 0, lockTarget: null, camera: new THREE.PerspectiveCamera() },
     enemies: () => enemies.filter((e) => e.alive),
+    character: opts.character ?? 'naruto', qte: null, qteInputs: [],
   } as unknown as GameContext;
   ctx.combat = new CombatSystem(ctx);
   const pc = new PlayerCombat(ctx, p);
@@ -242,5 +246,192 @@ describe('PlayerCombat', () => {
     expect(p.fighter.invulnerable).toBe(true);
     expect(p.fighter.cooldownReady('dodge')).toBe(false);
     expect(p.control.forcedVelocity?.length()).toBeCloseTo(COMBAT.dodge.speed);
+  });
+});
+
+describe('PlayerCombat v4 techniques', () => {
+  const hold = (t: ReturnType<typeof setup>, steps: number) => {
+    t.held.add('special');
+    t.step(['special']);
+    for (let i = 1; i < steps; i++) t.step();
+    t.held.delete('special');
+  };
+
+  it('Rasengan tap releases at once at minPower; damage and chakra scale correctly', () => {
+    const e = enemy(0, 2);
+    const t = setup([e]);
+    const powers: number[] = [];
+    t.events.on('chargeRelease', (ev) => powers.push(ev.power));
+    t.step(['special']); // not held: instant release
+    for (let i = 0; i < 40; i++) t.step();
+    expect(powers).toEqual([COMBAT.special.minPower]);
+    expect(e.fighter.hp).toBeCloseTo(500 - COMBAT.special.damage * COMBAT.special.minPower);
+    expect(t.p.fighter.chakra).toBeCloseTo(100 - COMBAT.special.chakraCost, 0);
+  });
+
+  it('Rasengan held past full charge caps at power 1, hits once, and has no cooldown', () => {
+    const e = enemy(0, 2);
+    const t = setup([e], [], { chakra: 300 });
+    const powers: number[] = [];
+    let hits = 0;
+    t.events.on('chargeRelease', (ev) => powers.push(ev.power));
+    t.events.on('damage', () => hits++);
+    hold(t, Math.round(COMBAT.special.fullChargeTime * 60) + 30);
+    expect(t.pc.charge?.level).toBe(1);
+    for (let i = 0; i < 40; i++) t.step();
+    expect(powers).toEqual([1]);
+    expect(hits).toBe(1);
+    expect(e.fighter.hp).toBeCloseTo(500 - COMBAT.special.damage);
+    expect(t.p.fighter.cooldownReady('special')).toBe(true);
+    t.step(['special']);
+    expect(powers).toHaveLength(2);
+  });
+
+  it('a hit during the charge cancels it for free; charge getter reports progress', () => {
+    const t = setup();
+    t.held.add('special');
+    t.step(['special']);
+    for (let i = 0; i < 44; i++) t.step();
+    expect(t.pc.charge?.technique).toBe('rasengan');
+    expect(t.pc.charge?.level).toBeCloseTo(0.5, 1);
+    const e = enemy(0, 5);
+    t.ctx.combat.dealDamage(e, t.p, 1, 0, 'enemyMelee', t.p.chest());
+    t.step();
+    expect(t.pc.charge).toBeNull();
+    expect(t.p.fighter.chakra).toBe(100);
+  });
+
+  it('Chidori pierces: every enemy on the path is hit exactly once, others are untouched', () => {
+    const a = enemy(0, 3), b = enemy(0.5, 7), off = enemy(4, 5);
+    const t = setup([a, b, off], [], { character: 'kakashi' });
+    const hits = new Map<number, number>();
+    t.events.on('damage', (ev) => hits.set(ev.targetId, (hits.get(ev.targetId) ?? 0) + 1));
+    hold(t, 100);
+    for (let i = 0; i < 60; i++) t.step();
+    expect(hits.get(a.id)).toBe(1);
+    expect(hits.get(b.id)).toBe(1);
+    expect(hits.has(off.id)).toBe(false);
+    expect(t.p.position.z).toBeCloseTo(COMBAT.chidori.dashDistance, 1); // passed through
+    expect(a.fighter.hp).toBeCloseTo(500 - COMBAT.chidori.damage);
+  });
+
+  it('Chidori stops before a wall', () => {
+    const behind = enemy(0, 7);
+    const ray: Ray = (o, d, max) => (d.z > 0.5 && 5 - o.z <= max ? { distance: 5 - o.z } : null);
+    const t = setup([behind], [], { character: 'kakashi', raycast: ray });
+    hold(t, 100);
+    for (let i = 0; i < 60; i++) t.step();
+    expect(t.p.position.z).toBeLessThanOrEqual(5 - t.p.radius);
+    expect(t.p.position.z).toBeGreaterThan(4);
+    expect(behind.fighter.hp).toBe(500);
+    expect(t.pc.currentMove).toBe('none');
+  });
+
+  it('Sharingan disorients enemies within radius only and interrupts their attacks', () => {
+    const near = enemy(0, 5), far = enemy(0, COMBAT.sharingan.radius + 3);
+    const t = setup([near, far], [], { character: 'sasuke' });
+    let targets: number[] = [];
+    t.events.on('genjutsu', (ev) => { targets = ev.targets; });
+    t.ctx.combat.spawnHitbox({ owner: near, kind: 'enemyMelee', forwardOffset: 1, heightOffset: 1, radius: 0.5, duration: 5, damage: 1, knockback: 0 });
+    t.step(['special']);
+    for (let i = 0; i < Math.ceil(COMBAT.sharingan.castTime * 60) + 2; i++) t.step();
+    expect(near.disoriented).toBe(COMBAT.sharingan.duration);
+    expect(far.disoriented).toBe(0);
+    expect(targets).toEqual([near.id]);
+    expect(t.ctx.combat.counts.hitboxes).toBe(0);
+    expect(t.p.fighter.chakra).toBeCloseTo(100 - COMBAT.sharingan.chakraCost, 0);
+    expect(t.p.fighter.cooldownReady('special')).toBe(false);
+  });
+
+  it('grab: six correct arrows strike, finish with a launch, release and clear the qte after the outro', () => {
+    const e = enemy(0, 1.5);
+    const t = setup([e]);
+    const ends: string[] = [];
+    t.events.on('grabEnd', (ev) => ends.push(`${ev.result}:${ev.hits}`));
+    t.step(['grab']);
+    const q = t.ctx.qte!;
+    expect(q.arrows).toHaveLength(COMBAT.grab.arrows);
+    expect(e.grabbedBy).toBe(t.p.id);
+    expect(e.anim).toBe('grabbed');
+    expect(t.p.fighter.invulnerable).toBe(true);
+    for (const dir of q.arrows) {
+      t.ctx.qteInputs.push(dir);
+      t.step();
+    }
+    expect(ends).toEqual([`complete:${COMBAT.grab.arrows}`]);
+    expect(q.done).toBe(true);
+    expect(e.grabbedBy).toBeNull();
+    expect(e.anim).toBe('launched');
+    const g = COMBAT.grab;
+    let strikes = 0;
+    for (let i = 0; i < g.arrows; i++) strikes += g.damagePerHit * (1 + g.damageRamp * i);
+    expect(e.fighter.hp).toBeCloseTo(500 - strikes - g.finisherDamage);
+    for (let i = 0; i < Math.ceil(g.outro * 60) + 1; i++) t.step();
+    expect(t.ctx.qte).toBeNull();
+  });
+
+  it('grab: strikes never kill a weak enemy, so the sequence completes and the finisher gets the kill', () => {
+    const e = enemy(0, 1.5);
+    const t = setup([e]);
+    e.fighter.hp = 20; // less than the six strikes combined
+    const ends: string[] = [];
+    t.events.on('grabEnd', (ev) => ends.push(ev.result));
+    t.step(['grab']);
+    for (const dir of t.ctx.qte!.arrows) { t.ctx.qteInputs.push(dir); t.step(); }
+    expect(ends).toEqual(['complete']);
+    expect(e.alive).toBe(false);
+  });
+
+  it('grab: a wrong arrow ends with miss, waiting ends with timeout, no target whiffs', () => {
+    const e = enemy(0, 1.5);
+    const t = setup([e]);
+    const ends: string[] = [];
+    t.events.on('grabEnd', (ev) => ends.push(ev.result));
+    t.step(['grab']);
+    const wrong = t.ctx.qte!.arrows[0] === 'up' ? 'down' : 'up';
+    t.ctx.qteInputs.push(wrong);
+    t.step();
+    expect(ends).toEqual(['miss']);
+    expect(e.grabbedBy).toBeNull();
+    for (let i = 0; i < 120; i++) t.step();
+    t.step(['grab']);
+    for (let i = 0; i < Math.ceil(COMBAT.grab.time * 60) + 1; i++) t.step();
+    expect(ends).toEqual(['miss', 'timeout']);
+
+    const w = setup([enemy(0, 10)]);
+    w.step(['grab']);
+    expect(w.ctx.qte).toBeNull();
+    expect(w.p.anim).toBe('grabHold');
+  });
+
+  it('grab cleanup: target death, reset() and CombatSystem.clear() release the victim', () => {
+    const e = enemy(0, 1.5);
+    const t = setup([e]);
+    const ends: string[] = [];
+    t.events.on('grabEnd', (ev) => ends.push(ev.result));
+    t.step(['grab']);
+    e.fighter.hp = 0;
+    t.step();
+    expect(ends).toEqual(['interrupted']);
+    expect(e.grabbedBy).toBeNull();
+
+    const e2 = enemy(0, 1.5);
+    const r = setup([e2]);
+    r.step(['grab']);
+    r.pc.reset();
+    expect(e2.grabbedBy).toBeNull();
+    expect(r.ctx.qte).toBeNull();
+
+    const e3 = enemy(0, 1.5);
+    const c = setup([e3]);
+    const cEnds: string[] = [];
+    c.events.on('grabEnd', (ev) => cEnds.push(ev.result));
+    c.step(['grab']);
+    c.ctx.combat.clear();
+    expect(cEnds).toEqual(['interrupted']);
+    expect(e3.grabbedBy).toBeNull();
+    expect(c.ctx.qte).toBeNull();
+    c.step();
+    expect(c.pc.currentMove).toBe('none');
   });
 });
