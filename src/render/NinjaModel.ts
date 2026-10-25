@@ -53,7 +53,6 @@ const ANIM = {
   breathRate: 2.2,
   /** Idle weight-shift rate (rad/s) and amplitude (rad). */
   swayRate: 0.8, swayAmp: 0.035,
-  climbRate: 7,
   /** Dodge roll length (s) — matches the combat dodge. */
   dodgeTime: COMBAT.dodge.duration,
   deathTime: 0.7,
@@ -139,15 +138,18 @@ export function computePose(anim: AnimState, t: number, phase: number, time: num
       out[P.torsoPitch] = 0.12; out[P.headPitch] = 0.25;
       break;
     }
-    case 'climb': {
-      const s = Math.sin(t * ANIM.climbRate);
-      out[P.lShX] = -2.75 + 0.45 * s; out[P.rShX] = -2.75 - 0.45 * s; // alternating reach
-      out[P.lEl] = 0.5 - 0.4 * s; out[P.rEl] = 0.5 + 0.4 * s;
-      out[P.lShZ] = out[P.rShZ] = 0.25;
-      out[P.lHipX] = -0.9 - 0.4 * s; out[P.rHipX] = -0.9 + 0.4 * s;
-      out[P.lKnee] = 1.3 + 0.3 * s; out[P.rKnee] = 1.3 - 0.3 * s;
-      out[P.torsoPitch] = -0.08; out[P.headPitch] = -0.35;
-      out[P.bodyY] = 0.03 * Math.abs(s);
+    case 'climb': { // wall-walking: the whole model is turned onto the wall, so this is a light ninja run on its feet
+      const a = clamp01(speed / ANIM.runFullSpeed);
+      const s = Math.sin(phase);
+      out[P.lHipX] = -0.85 * s * a - 0.1; out[P.rHipX] = 0.85 * s * a - 0.1;
+      out[P.lKnee] = 0.35 + 0.9 * a * (0.5 + 0.5 * Math.cos(phase));
+      out[P.rKnee] = 0.35 + 0.9 * a * (0.5 - 0.5 * Math.cos(phase));
+      out[P.torsoPitch] = 0.15 + 0.3 * a; out[P.headPitch] = -0.2 * a;
+      out[P.lShX] = out[P.rShX] = 0.3 + 0.8 * a; // arms trail back as speed builds
+      out[P.lShZ] = out[P.rShZ] = 0.2;
+      out[P.lEl] = out[P.rEl] = 0.5 - 0.35 * a;
+      out[P.torsoTwist] = 0.08 * s * a;
+      out[P.bodyY] = -0.06 + 0.05 * Math.abs(Math.cos(phase)) * a;
       break;
     }
     case 'attack1': { // straight jab (right): pull back, snap out with overshoot
@@ -418,6 +420,7 @@ interface SharedGeo {
   head: THREE.BufferGeometry; eyeWhite: THREE.BufferGeometry; iris: THREE.BufferGeometry; ink: THREE.BufferGeometry; inkMasked: THREE.BufferGeometry;
   band: THREE.BufferGeometry; plate: THREE.BufferGeometry; bandTail: THREE.BufferGeometry; mask: THREE.BufferGeometry;
   shell: THREE.BufferGeometry; orbCore: THREE.BufferGeometry; orbShell: THREE.BufferGeometry;
+  footChakra: THREE.BufferGeometry;
   hair: Partial<Record<HairStyle, THREE.BufferGeometry>>;
 }
 let geo: SharedGeo | null = null;
@@ -470,6 +473,11 @@ function sharedGeo(): SharedGeo {
     shell: new THREE.SphereGeometry(1, 20, 14),
     orbCore: new THREE.SphereGeometry(0.1, 14, 10),
     orbShell: new THREE.SphereGeometry(0.17, 16, 10),
+    // Chakra under the sole (sole bottom is at y = -0.4775 in the knee frame); flame points away from the foot.
+    footChakra: merge([
+      new THREE.SphereGeometry(0.1, 14, 8).scale(0.9, 0.22, 1.5).translate(0, -0.49, 0.04),
+      new THREE.ConeGeometry(0.075, 0.26, 10, 1, true).rotateX(Math.PI).translate(0, -0.6, 0.04),
+    ]),
     hair: {},
   };
   return geo;
@@ -482,6 +490,7 @@ function hairGeo(style: HairStyle): THREE.BufferGeometry {
 interface SharedMat {
   eyeWhite: THREE.MeshBasicMaterial; ink: THREE.MeshBasicMaterial; wrap: THREE.MeshToonMaterial; plate: THREE.MeshToonMaterial;
   orbCore: THREE.MeshBasicMaterial; orbShells: THREE.MeshBasicMaterial[]; armGlow: THREE.MeshBasicMaterial;
+  footChakra: THREE.MeshBasicMaterial;
   guard: THREE.MeshBasicMaterial; warn: THREE.MeshBasicMaterial; iris: Map<number, THREE.MeshBasicMaterial>;
 }
 let mats: SharedMat | null = null;
@@ -495,6 +504,7 @@ function sharedMat(): SharedMat {
     wrap: toon(0xece4cf, { rim: 0.6 }),
     plate: toon(0xd5dde6, { rim: 0.6, emissive: 0x2a3038 }),
     orbCore: glowMaterial(0xe6f8ff, 4),
+    footChakra: add(0x5cc0ff, 0.85, 2.4),
     orbShells: [add(0x4fb8ff, 0.45, 1.6), add(0x7fd0ff, 0.3, 1.4), add(0x2f8fff, 0.25, 1.8)],
     armGlow: glowMaterial(0xff3b1f, 2.6, { side: THREE.BackSide }),
     guard: add(0x66c8ff, 0.14),
@@ -562,6 +572,8 @@ export class NinjaModel {
   private readonly bandTails: THREE.Group[] = [];
   private readonly orb = new THREE.Group();
   private readonly orbShells: THREE.Mesh[] = [];
+  /** Per-foot chakra (sole pad + flame), shown while wall-walking. */
+  private readonly footChakra: THREE.Mesh[] = [];
   private readonly armGlow: THREE.Mesh;
   private readonly aura: THREE.Mesh;
   private readonly auraMat: THREE.ShaderMaterial;
@@ -689,6 +701,13 @@ export class NinjaModel {
       this.orb.add(m);
       this.orbShells.push(m);
     }
+    // Wall-walking chakra on each sole.
+    for (const knee of this.knees) {
+      const f = new THREE.Mesh(g.footChakra, s.footChakra);
+      f.visible = false;
+      knee.add(f);
+      this.footChakra.push(f);
+    }
     // Aura shell (flame, additive), guard bubble and telegraph marker.
     this.auraMat = new THREE.ShaderMaterial({
       uniforms: { color: { value: new THREE.Color(0x4fb8ff) }, opacity: { value: 0 }, time: { value: 0 } },
@@ -721,7 +740,7 @@ export class NinjaModel {
   /** `speed` is horizontal m/s; `animTime` seconds since the state started. */
   update(dt: number, anim: AnimState, animTime: number, speed: number): void {
     this.clock += dt;
-    if (anim === 'run') this.phase += dt * speed * ANIM.strideRun;
+    if (anim === 'run' || anim === 'climb') this.phase += dt * speed * ANIM.strideRun;
     else if (anim === 'sprint') this.phase += dt * speed * ANIM.strideSprint;
     computePose(anim, animTime, this.phase, this.clock, speed, this.target);
     const rate = anim === 'dead' ? ANIM.blendDead : ACTION_STATES.has(anim) ? ANIM.blendAction : ANIM.blendLoop;
@@ -775,6 +794,12 @@ export class NinjaModel {
     const breathe = 1 + 0.04 * Math.sin(this.clock * 6);
     this.aura.scale.set(0.62 * breathe, 1.05 * breathe, 0.56 * breathe);
 
+    if (this.footChakra[0].visible) {
+      this.footChakra.forEach((f, i) => {
+        const flick = 1 + 0.18 * Math.sin(this.clock * 26 + i * 2.1) + 0.08 * Math.sin(this.clock * 41 + i);
+        f.scale.set(flick, 1, flick); // x/z only: scaling y would lift the pad off the sole
+      });
+    }
     if (this.orb.visible) {
       this.orbShells[0].rotation.y += dt * 13;
       this.orbShells[1].rotation.x += dt * 10;
@@ -834,6 +859,10 @@ export class NinjaModel {
   /** Glowing chakra sphere in the right hand (Rasengan wind-up/dash). */
   setHandOrb(on: boolean): void {
     this.orb.visible = on;
+  }
+  /** Blue chakra glow on both soles (wall-walking). */
+  setFootChakra(on: boolean): void {
+    for (const f of this.footChakra) f.visible = on;
   }
   /** Guard bubble/pose highlight. */
   setGuard(on: boolean): void {

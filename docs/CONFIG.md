@@ -5,7 +5,7 @@ ce document résume où trouver quoi. Unités : mètres, secondes, radians, m/s.
 
 | Fichier | Contenu | Valeurs clés |
 |---|---|---|
-| [`movement.ts`](../src/config/movement.ts) | Course, sprint, accélération/freinage, contrôle aérien, gravité, saut, escalade, réapparition | `runSpeed` 7.5, `sprintSpeed` 12, `gravity` 28, `jumpHeight` 2.4, `climbChakraPerSecond` 12, `killPlaneY` −20 |
+| [`movement.ts`](../src/config/movement.ts) | Course, sprint, accélération/freinage, contrôle aérien, gravité, saut, escalade, réapparition | `runSpeed` 7.5, `sprintSpeed` 12, `gravity` 28, `jumpHeight` 2.4, `climbChakraPerSecond` 2.5, `killPlaneY` −20 |
 | [`camera.ts`](../src/config/camera.ts) | Distance, hauteur, limites de tangage, sensibilité de base, collisions, verrouillage | `distance` 6, `lockOnRange` 25, `maxShake` 0.4 |
 | [`combat.ts`](../src/config/combat.ts) | PV/chakra du joueur, combo (dégâts, fenêtres windup/active/recovery), kunai, Rasengan, garde, esquive, hit-stun, hit-stop, secousses | `player.maxHp` 200, `special.chakraCost` 35, `special.cooldown` 6, `guardDamageFactor` 0.25, `dodge.invulnerable` 0.25 |
 | [`chakra.ts`](../src/config/chakra.ts) | Régénération passive, délai, concentration | `regenPerSecond` 4, `regenDelay` 2.5, `concentrateRegenPerSecond` 30, `concentrateStartup` 0.25 |

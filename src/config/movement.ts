@@ -29,7 +29,8 @@ export const MOVEMENT = {
   sprintStride: 2.2,
   /** Wall climbing. */
   climbSpeed: 4,
-  climbChakraPerSecond: 12,
+  /** Wall-walking is cheap for a ninja: a light, steady drain. */
+  climbChakraPerSecond: 2.5,
   climbMinChakra: 5,
   climbProbeDistance: 0.8,
   /** Upward speed of the hop onto the top of a wall (m/s). */

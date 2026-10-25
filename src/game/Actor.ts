@@ -23,6 +23,15 @@ export interface ActorControl {
 
 let nextId = 1;
 
+const UP = new THREE.Vector3(0, 1, 0);
+const tmpX = new THREE.Vector3();
+const tmpZ = new THREE.Vector3();
+const tmpM = new THREE.Matrix4();
+const tmpQ = new THREE.Quaternion();
+const tmpP = new THREE.Vector3();
+/** How fast the model turns onto / off a wall when wall-walking starts or ends (1/s). */
+const WALL_BLEND_RATE = 12;
+
 /** A ninja in the world: shared state for the player and enemies. Owner: integration. */
 export class Actor {
   readonly id = nextId++;
@@ -35,6 +44,12 @@ export class Actor {
   prevYaw = 0;
   grounded = false;
   climbing = false;
+  /** Horizontal normal of the wall being walked on (valid while climbing, kept afterwards for blending out). */
+  readonly wallNormal = new THREE.Vector3(0, 0, 1);
+  /** Render-only: 0 = upright, 1 = standing on the wall. */
+  private wallBlend = 0;
+  /** Render-only: direction the feet run along the wall. */
+  private readonly wallForward = new THREE.Vector3(0, 1, 0);
   anim: AnimState = 'idle';
   animTime = 0;
   /** Set true when the actor should be removed from the world. */
@@ -95,8 +110,34 @@ export class Actor {
     root.position.lerpVectors(this.prevPosition, this.position, alpha);
     let dy = this.yaw - this.prevYaw;
     dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-    root.rotation.y = this.prevYaw + dy * alpha;
-    const speed = Math.hypot(this.velocity.x, this.velocity.z);
+    root.rotation.set(0, this.prevYaw + dy * alpha, 0);
+    const speed = this.climbing ? this.velocity.length() : Math.hypot(this.velocity.x, this.velocity.z);
+    this.orientOnWall(frameDt);
+    this.model.setFootChakra(this.climbing);
     this.model.update(frameDt, this.anim, this.animTime, speed);
+  }
+
+  /**
+   * Wall-walking: the model stands perpendicular to the wall with its soles on the surface (model up =
+   * wall normal, model forward = direction of travel along the wall), blended in/out from the upright pose.
+   * The physics capsule stays upright; this is render-only.
+   */
+  private orientOnWall(frameDt: number): void {
+    const target = this.climbing ? 1 : 0;
+    this.wallBlend += (target - this.wallBlend) * (1 - Math.exp(-WALL_BLEND_RATE * frameDt));
+    if (this.wallBlend < 0.001) return;
+    const n = this.wallNormal;
+    if (this.climbing && this.velocity.lengthSq() > 0.25) this.wallForward.copy(this.velocity).addScaledVector(n, -this.velocity.dot(n)).normalize();
+    else if (!this.climbing || this.wallForward.lengthSq() < 0.5) this.wallForward.copy(UP);
+    tmpZ.copy(this.wallForward);
+    tmpX.crossVectors(n, tmpZ).normalize();
+    tmpM.makeBasis(tmpX, n, tmpZ);
+    tmpQ.setFromRotationMatrix(tmpM);
+    const root = this.model.root;
+    const k = this.wallBlend * this.wallBlend * (3 - 2 * this.wallBlend);
+    root.quaternion.slerp(tmpQ, k);
+    // Feet on the wall at mid-capsule height, one radius in from the capsule centre.
+    tmpP.copy(root.position).setY(root.position.y + this.height * 0.5).addScaledVector(n, -this.radius);
+    root.position.lerp(tmpP, k);
   }
 }

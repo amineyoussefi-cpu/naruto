@@ -137,6 +137,7 @@ export class PlayerController {
     this.sprinting = false;
     this.jumpAssist.reset();
     this.wallNormal.copy(hit);
+    a.wallNormal.copy(hit);
     a.yaw = Math.atan2(-hit.x, -hit.z);
     this.ctx.events.emit('climbStart', { id: a.id });
     return true;
@@ -183,6 +184,7 @@ export class PlayerController {
     const wall = this.probeWall(a.chest(this.origin), this.dir);
     if (wall) {
       n.copy(wall);
+      a.wallNormal.copy(wall);
       a.yaw = Math.atan2(-n.x, -n.z);
       if (a.grounded && axes.y < 0) a.climbing = false; // climbed back down to the floor
     } else {
