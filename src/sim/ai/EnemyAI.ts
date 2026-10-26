@@ -116,6 +116,12 @@ export class EnemyAI {
     const range = a.kind === 'ranged' ? ENEMIES.ranged.detectRange : ENEMIES.melee.detectRange;
     const valid = (p: Actor) => p.alive && !p.removed && p.downed <= 0 && p.team !== a.team && p.position.distanceTo(a.position) <= range * ENEMIES.loseTargetFactor;
     if (b.target && valid(b.target)) return b.target;
+    // Mission groups fight together: join a groupmate's fight before picking a target of one's own.
+    if (a.groupId) {
+      for (const o of this.brains.values()) {
+        if (o !== b && o.actor.groupId === a.groupId && o.target && valid(o.target)) return o.target;
+      }
+    }
     let best: Actor | null = null, bestD: number = range;
     for (const pl of this.ctx.players.values()) {
       const p = pl.actor, d = p.position.distanceTo(a.position);
@@ -179,7 +185,7 @@ export class EnemyAI {
     switch (b.state) {
       case 'idle':
         this.anim(b, 'idle');
-        if (playerAlive && dist < cfg.detectRange) this.setState(b, 'detect');
+        if (playerAlive) this.setState(b, 'detect'); // pickTarget already applied the detect range (or a groupmate's fight)
         break;
       case 'detect':
         this.face(a, toPlayer, dt);

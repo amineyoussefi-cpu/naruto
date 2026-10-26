@@ -117,3 +117,23 @@ describe('EnemyAI status effects (v4)', () => {
     expect(hitboxes.length).toBe(0);
   });
 });
+
+describe('EnemyAI groups (v5 missions)', () => {
+  it('dormant enemies idle; a woken group shares its target even beyond one member’s detect range', () => {
+    const { ctx, actors } = makeCtx();
+    const near = makeActor('melee', 0, 10), far = makeActor('melee', 0, 70);
+    near.groupId = far.groupId = 3;
+    near.dormant = far.dormant = true;
+    actors.push(near, far);
+    const ai = new EnemyAI(ctx, never);
+    ai.register(near);
+    ai.register(far);
+    run(ai, 1);
+    expect(ai.stateOf(near)).toBe('idle');
+    expect(near.position.z).toBeCloseTo(10, 3);
+    near.dormant = far.dormant = false;
+    run(ai, 1);
+    expect(ai.stateOf(far)).not.toBe('idle');
+    expect(far.position.z).toBeLessThan(70);
+  });
+});

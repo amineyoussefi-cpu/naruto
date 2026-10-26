@@ -94,17 +94,6 @@ kbd {
 .cd-key { position: absolute; top: 3px; left: 50%; transform: translateX(-50%); padding: 0 5px; font-size: .7rem; }
 .cd-cost { position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; font: 700 .65rem var(--body); color: #9fd6ff; }
 .cd.disabled { filter: grayscale(1) brightness(.7); }
-#hud-wavebox { position: absolute; right: 24px; top: 20px; text-align: right; text-shadow: 0 2px 3px #000; }
-#hud-wave { font: italic 900 1.8rem var(--brush); color: var(--orange-hot); text-transform: uppercase; }
-#hud-enemies { font-weight: 700; color: var(--cream); }
-#hud-intermission { margin-top: 6px; font-weight: 800; color: var(--orange-hot); }
-#hud-banner {
-  position: absolute; left: 0; right: 0; top: 26%; text-align: center; padding: 12px 0;
-  font: italic 900 clamp(2.4rem, 7vw, 4.5rem) var(--brush); text-transform: uppercase; color: var(--orange-hot);
-  background: linear-gradient(90deg, transparent, rgba(27,31,74,.85) 20%, rgba(27,31,74,.85) 80%, transparent);
-  text-shadow: 3px 3px 0 var(--red), 6px 6px 0 var(--ink);
-}
-#hud-banner.anim { animation: banner 2.4s ease-out forwards; }
 #hud-lock { position: absolute; left: 50%; top: 18px; transform: translateX(-50%); width: min(420px, 50vw); text-align: center; text-shadow: 0 1px 2px #000; }
 #hud-lock-name { display: block; font-weight: 800; color: var(--cream); margin-bottom: 4px; }
 #hud-lock .bar { height: 12px; }
@@ -230,4 +219,85 @@ kbd {
 }
 @media (prefers-reduced-motion: reduce) {
   #hud-charge.max #hud-charge-val, #hud-charge.max .charge-ring, #ui .qte-arrow.wrong.anim, #qte-banner { animation: none; }
+}
+
+/* ---------- v5: lobby ---------- */
+.lobby-field { grid-template-columns: auto 1fr; }
+#lobby-name { padding: 8px 10px; font: 700 1.05rem var(--body); border: 2px solid var(--indigo); border-radius: 4px; color: var(--ink); background: #fff; }
+.lobby-chars { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 6px 0 10px; }
+#ui .lobby-char, #ui .lobby-char:hover { min-width: 130px; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-color: var(--accent); }
+#ui .lobby-char small { font-weight: 600; font-size: .75rem; color: var(--accent); text-transform: uppercase; }
+#ui .lobby-char[aria-pressed="true"] { box-shadow: 0 0 0 3px var(--cream), 0 0 16px 3px var(--accent); }
+#lobby-status { min-height: 1.3em; font-weight: 700; margin: 4px 0; }
+#lobby-status.error { color: var(--red); }
+
+/* ---------- v5: online menu (players list) ---------- */
+.online-note { margin: 16px 0 4px; font: italic 900 1.1rem var(--brush); text-transform: uppercase; color: var(--red); }
+.players { list-style: none; padding: 0; margin: 6px 0 0; text-align: left; }
+.player-row { display: grid; grid-template-columns: 1fr 80px 80px 90px; gap: 10px; align-items: center; padding: 5px 8px; border-bottom: 1px solid rgba(26,20,16,.2); }
+.player-row.me { background: rgba(240,122,26,.15); }
+.player-row.away { opacity: .55; }
+.player-name { font-weight: 800; }
+.player-name::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; transform: rotate(45deg); background: var(--accent); }
+.player-ping { font-variant-numeric: tabular-nums; text-align: right; color: #5a4a36; }
+#ui .player-row .kick { min-width: 0; padding: 3px 10px; font-size: .85rem; background: var(--red); border-color: var(--ink); }
+
+/* ---------- v5: minimap and full map ---------- */
+#minimap-box { position: absolute; right: 20px; top: 16px; width: 200px; height: 200px; border-radius: 50%; box-shadow: 0 0 0 3px var(--orange-hot), 0 0 0 6px rgba(13,16,32,.8), 0 6px 18px rgba(0,0,0,.6); }
+#minimap { display: block; width: 200px; height: 200px; border-radius: 50%; }
+.minimap-key { position: absolute; left: 4px; bottom: 4px; font-size: .7rem; }
+#fullmap { position: absolute; inset: 0; pointer-events: auto; background: var(--indigo-deep); }
+#fullmap-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.fullmap-bar { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; gap: 14px; align-items: center; padding: 6px 12px; background: rgba(13,16,32,.85); border: 2px solid var(--orange); border-radius: 4px; color: var(--cream); font-weight: 700; }
+#ui .fullmap-bar button { min-width: 0; padding: 4px 14px; font-size: .9rem; }
+
+/* ---------- v5: co-op / PvP HUD ---------- */
+#mode-objective { position: absolute; right: 20px; top: 232px; max-width: 380px; padding: 6px 12px; text-align: right; color: var(--cream); font-weight: 800; text-shadow: 0 1px 2px #000; background: linear-gradient(260deg, rgba(13,16,32,.8) 70%, transparent); border-right: 4px solid #ffe34f; }
+#mode-objective-timer { color: var(--orange-hot); font-variant-numeric: tabular-nums; }
+#mode-board { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); min-width: 320px; padding: 10px 20px; text-align: center; color: var(--ink); background: linear-gradient(180deg, #fbf3df, var(--cream)); border-top: 6px solid #6b3b1a; border-bottom: 6px solid #6b3b1a; box-shadow: 0 0 0 2px var(--chakra), 0 8px 20px rgba(0,0,0,.5); }
+#mode-board.team-red { box-shadow: 0 0 0 3px #e83b3b, 0 8px 20px rgba(0,0,0,.5); }
+#mode-board.team-blue { box-shadow: 0 0 0 3px #3f7bff, 0 8px 20px rgba(0,0,0,.5); }
+#mode-board-title { font: italic 900 1.3rem var(--brush); text-transform: uppercase; color: var(--indigo); }
+#mode-board-team:empty { display: none; }
+.team-red #mode-board-team { color: #c22; font-weight: 800; }
+.team-blue #mode-board-team { color: #24c; font-weight: 800; }
+#mode-board-hint { font-weight: 700; }
+#mode-board-blocked { margin-top: 4px; font-weight: 800; color: var(--red); }
+#mode-countdown {
+  position: absolute; left: 0; right: 0; top: 26%; text-align: center; padding: 12px 0;
+  font: italic 900 clamp(2.2rem, 6vw, 4rem) var(--brush); text-transform: uppercase; color: var(--orange-hot);
+  background: linear-gradient(90deg, transparent, rgba(27,31,74,.85) 20%, rgba(27,31,74,.85) 80%, transparent);
+  text-shadow: 3px 3px 0 var(--red), 6px 6px 0 var(--ink);
+}
+#mode-downed { position: absolute; left: 50%; top: 40%; transform: translateX(-50%); text-align: center; text-shadow: 0 2px 3px #000; }
+#mode-downed-text { font: italic 900 1.6rem var(--brush); text-transform: uppercase; color: #ff6b5b; }
+#mode-downed-timer { font: 900 2.4rem var(--body); color: var(--cream); font-variant-numeric: tabular-nums; }
+#mode-revive { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); width: 260px; text-align: center; font-weight: 800; color: var(--cream); text-shadow: 0 1px 2px #000; }
+#mode-revive .bar { height: 12px; margin-top: 6px; transform: skewX(-18deg); }
+#mode-revive .fill { background: linear-gradient(180deg, #d8fff0, #3fd6a0); }
+#pvp-score { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: stretch; font: italic 900 1.5rem var(--brush); text-transform: uppercase; text-shadow: 0 2px 2px #000; }
+.pvp-team { padding: 4px 18px; color: #fff; }
+.pvp-team.red { background: linear-gradient(90deg, transparent, #b52222); clip-path: polygon(12% 0, 100% 0, 100% 100%, 0 100%); }
+.pvp-team.blue { background: linear-gradient(270deg, transparent, #2747b5); clip-path: polygon(0 0, 88% 0, 100% 100%, 0 100%); }
+.pvp-team b { font-size: 1.9rem; }
+.pvp-mid { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2px 14px; background: rgba(13,16,32,.85); font-size: .8rem; color: var(--cream); }
+#pvp-timer { font: 900 1.3rem var(--body); font-style: normal; font-variant-numeric: tabular-nums; color: var(--orange-hot); }
+#hud-lock.below-score { top: 76px; }
+#pvp-mates { position: absolute; left: 24px; top: 40%; display: flex; flex-direction: column; gap: 8px; }
+.mate { width: 170px; color: var(--cream); font-weight: 800; font-size: .85rem; text-shadow: 0 1px 2px #000; }
+.mate .bar { transform: skewX(-18deg); margin-top: 2px; }
+.mate .fill { background: linear-gradient(180deg, #ffe36a, #f07a1a); }
+.mate.ko { opacity: .45; }
+#pvp-killfeed { position: absolute; right: 20px; top: 232px; list-style: none; margin: 0; padding: 0; text-align: right; font-size: .9rem; color: var(--cream); text-shadow: 0 1px 2px #000; }
+#pvp-killfeed li { margin-bottom: 4px; padding: 3px 8px; background: rgba(13,16,32,.7); }
+#pvp-killfeed b { color: var(--orange-hot); }
+.screen.results { width: min(620px, calc(100vw - 32px)); pointer-events: none; }
+.results-table { width: 100%; border-collapse: collapse; margin: 10px 0; font-variant-numeric: tabular-nums; }
+.results-table th { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid var(--ink); padding: 4px 6px; }
+.results-table td { padding: 5px 6px; border-bottom: 1px solid rgba(26,20,16,.2); }
+.results-table td:first-child, .results-table th:first-child { text-align: left; font-weight: 800; }
+
+@media (max-height: 700px), (max-width: 760px) {
+  #minimap-box, #minimap { width: 150px; height: 150px; }
+  #mode-objective, #pvp-killfeed { top: 180px; }
 }

@@ -14,7 +14,7 @@ import { PhysicsWorld } from './physics/PhysicsWorld';
 import { PlayerController } from './player/PlayerController';
 import {
   ACTOR_FLAGS, emptyInput, hasBit, INPUT_ACTIONS, MAX_PLAYERS,
-  type ActorInfo, type ActorState, type InputAction, type PlayerId, type PlayerInput, type SimEvent, type Snapshot,
+  type ActorInfo, type ActorState, type DebugMsg, type InputAction, type PlayerId, type PlayerInput, type SimEvent, type Snapshot,
 } from './protocol';
 import type { WorldData } from './world/types';
 import type { ModeState, Marker } from './missions/types';
@@ -29,6 +29,8 @@ export interface Director {
   reset(): void;
   /** PvP pre-round freeze: combat and movement skip frozen players. */
   frozen?(actorId: number): boolean;
+  /** True when the mode owns this player's death (downed, bled out, KO'd in a match): no free-roam respawn. */
+  holdsRespawn?(actorId: number): boolean;
 }
 
 export interface SimOptions {
@@ -202,6 +204,18 @@ export class Sim {
     slot.state.input = { ...input, pressed: input.pressed | pending, qte: input.qte ?? (slot.ackSeq < prev.seq ? prev.qte : null) };
   }
 
+  /** Test tooling (`--debug` servers, solo): teleport a player / set an actor's HP. */
+  debug(id: PlayerId, msg: DebugMsg): void {
+    const slot = this.slots.get(id);
+    if (msg.op === 'teleport' && slot) {
+      const feet = new THREE.Vector3(Number(msg.x) || 0, Number(msg.y) || 0, Number(msg.z) || 0);
+      slot.controller.reset(feet);
+    } else if (msg.op === 'hp') {
+      const a = this.ctx.actors.find((x) => x.id === msg.actorId);
+      if (a && a.alive) a.fighter.hp = Math.max(1, Math.min(a.fighter.maxHp, Number(msg.hp) || 1));
+    }
+  }
+
   ackSeq(id: PlayerId): number { return this.slots.get(id)?.ackSeq ?? 0; }
 
   player(id: PlayerId): PlayerState | undefined { return this.slots.get(id)?.state; }
@@ -243,11 +257,28 @@ export class Sim {
         a.velocity.set(0, 0, 0);
       }
     }
+    for (const slot of this.slots.values()) this.respawnIfDead(slot, dt);
     for (const slot of this.slots.values()) {
       slot.history[this.stepCount % HISTORY].copy(slot.state.actor.position);
       slot.ackSeq = slot.state.input.seq;
     }
     this.physics.step();
+  }
+
+  /** Free roam: dead players get back up at a village spawn after a short delay. */
+  private respawnIfDead(slot: PlayerSlot, dt: number): void {
+    const a = slot.state.actor;
+    if (a.alive || a.downed > 0 || this.director?.holdsRespawn?.(a.id)) { a.deadTime = 0; return; }
+    a.deadTime += dt;
+    if (a.deadTime < COMBAT.playerRespawnDelay) return;
+    a.deadTime = 0;
+    a.fighter.reset();
+    a.knockback.set(0, 0, 0);
+    a.setAnim('idle', true);
+    slot.combat.reset();
+    slot.controller.reset(this.playerSpawns[(slot.state.id - 1) % this.playerSpawns.length]);
+    a.fighter.setInvulnerable(COMBAT.respawnInvulnerable);
+    this.events.emit('respawn', { id: a.id });
   }
 
   private applyInput(slot: PlayerSlot): void {

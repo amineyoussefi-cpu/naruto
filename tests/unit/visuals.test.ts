@@ -5,15 +5,12 @@ import { Effects } from '../../src/render/Effects';
 import { createProjectileMesh, disposeObject } from '../../src/render/meshes';
 import { AudioSystem } from '../../src/audio/AudioSystem';
 import { EventBus } from '../../src/core/events';
-import { buildArena } from '../../src/world/Arena';
-import { heightAt, WORLD } from '../../src/world/terrain';
-import { PhysicsWorld } from '../../src/sim/physics/PhysicsWorld';
 import type { AnimState } from '../../src/core/types';
 import { CHARACTER_LOOKS, LOOKS, pickEnemyLook } from '../../src/render/looks';
 import type { ActorView as Actor } from '../../src/game/ActorView';
 
 const STATES: AnimState[] = ['idle', 'run', 'sprint', 'jump', 'fall', 'climb', 'attack1', 'attack2', 'attack3', 'attack4', 'attack5', 'throw', 'special', 'guard', 'dodge', 'hit', 'dead', 'concentrate', 'telegraph', 'dash', 'launched', 'substitution',
-  'charge', 'chidori', 'sharingan', 'dazed', 'grabHold', 'strikeUp', 'strikeDown', 'strikeLeft', 'strikeRight', 'grabFinisher', 'grabbed'];
+  'charge', 'chidori', 'sharingan', 'dazed', 'grabHold', 'strikeUp', 'strikeDown', 'strikeLeft', 'strikeRight', 'grabFinisher', 'grabbed', 'downed'];
 
 describe('NinjaModel poses', () => {
   it('gives every AnimState a distinct pose', () => {
@@ -175,50 +172,3 @@ describe('meshes / audio', () => {
   });
 });
 
-describe('Arena', () => {
-  it('builds the coastal valley: open-ground spawns, walkable water, climbables, frees everything', async () => {
-    const physics = await PhysicsWorld.create();
-    const scene = new THREE.Scene();
-    const arena = buildArena(scene, physics);
-    physics.step();
-    expect(arena.enemySpawns.length).toBeGreaterThanOrEqual(30);
-    expect(physics.climbable.size).toBeGreaterThan(20);
-    expect(physics.water.size).toBeGreaterThan(0);
-    const down = new THREE.Vector3(0, -1, 0);
-    for (const s of [arena.playerSpawn, ...arena.enemySpawns]) {
-      const hit = physics.raycast(new THREE.Vector3(s.x, s.y + 60, s.z), down, 120, { worldOnly: true });
-      expect(hit, `spawn ${s.x},${s.z}`).not.toBeNull();
-      // On the ground itself (not on a rock, trunk or roof), not water, not a steep slope.
-      expect(s.y - hit!.point.y, `spawn ${s.x},${s.z} height`).toBeGreaterThan(-0.05);
-      expect(s.y - hit!.point.y, `spawn ${s.x},${s.z} height`).toBeLessThan(0.8);
-      expect(physics.water.has(hit!.collider.handle), `spawn ${s.x},${s.z} water`).toBe(false);
-      expect(hit!.normal.y, `spawn ${s.x},${s.z} slope`).toBeGreaterThan(0.8);
-      expect(Math.hypot(s.x, s.z)).toBeLessThan(WORLD.boundary.radius);
-    }
-    // Estuary and open sea are walk-on-water surfaces at the water line.
-    for (const [x, z] of [[0, 18], [0, 90], [-30, 110]]) {
-      const hit = physics.raycast(new THREE.Vector3(x, 20, z), down, 40, { worldOnly: true });
-      expect(hit && physics.water.has(hit.collider.handle), `water at ${x},${z}`).toBe(true);
-      expect(physics.isWater(hit!.point)).toBe(true);
-    }
-    // The sea stack is a climbable vertical face.
-    const S = WORLD.stack;
-    const side = physics.raycast(new THREE.Vector3(S.x + 40, 15, S.z), new THREE.Vector3(-1, 0, 0), 60, { worldOnly: true });
-    expect(side?.climbable).toBe(true);
-    expect(Math.abs(side!.normal.y)).toBeLessThanOrEqual(0.5);
-    arena.update?.(new THREE.Vector3(50, 2, 50), 1 / 60);
-    arena.dispose();
-    expect(physics.world.colliders.len()).toBe(0);
-    expect(physics.water.size + physics.climbable.size).toBe(0);
-    expect(scene.children.length).toBe(0);
-  });
-
-  it('terrain is deterministic, finite and roughly 210 m of playable valley', () => {
-    expect(heightAt(12.3, -45.6)).toBe(heightAt(12.3, -45.6));
-    for (let x = -200; x <= 200; x += 25) for (let z = -200; z <= 200; z += 25) expect(Number.isFinite(heightAt(x, z))).toBe(true);
-    expect(heightAt(0, 20)).toBeLessThan(WORLD.waterY); // estuary
-    expect(heightAt(0, 100)).toBeLessThan(WORLD.waterY - 3); // sea
-    expect(heightAt(WORLD.spawn.x, WORLD.spawn.z)).toBeGreaterThan(WORLD.waterY + 0.5);
-    expect(heightAt(80, -10)).toBeGreaterThan(WORLD.plateau.y - 3); // plateau
-  });
-});

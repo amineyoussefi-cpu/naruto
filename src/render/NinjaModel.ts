@@ -100,6 +100,8 @@ const ANIM = {
   arcCharge: 0.6,
   /** Daze ring spin (rad/s) and height above the head centre (m). */
   dazeSpin: 4, dazeHeight: 0.3,
+  /** Downed crawl: cycle advance per metre (rad/m) and the speed (m/s) above which the crawl starts / is full. */
+  strideCrawl: 6, crawlStart: 0.2, crawlFull: 0.7,
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -454,6 +456,18 @@ export function computePose(anim: AnimState, t: number, phase: number, time: num
       out[P.rHipX] = 0.2 * crouch - 2.6 * p; out[P.rKnee] = 1.3 * crouch + 0.05 * p;
       out[P.lShX] = out[P.rShX] = 0.5 * crouch + 0.9 * p; out[P.lShZ] = out[P.rShZ] = 0.3 + 0.5 * p; out[P.lEl] = out[P.rEl] = 1.0 * crouch + 0.2;
       out[P.torsoPitch] = 0.45 * crouch - 0.3 * p; out[P.headPitch] = -0.3 * p;
+      break;
+    }
+    case 'downed': { // knocked out face down, head up; arms and legs pull alternately when crawling
+      const c = clamp01((speed - ANIM.crawlStart) / (ANIM.crawlFull - ANIM.crawlStart));
+      const s = Math.sin(phase) * c, b = Math.sin(time * ANIM.breathRate) * 0.01;
+      out[P.bodyPitch] = 1.42; out[P.bodyY] = -0.78 + b + 0.03 * Math.abs(s);
+      out[P.bodyRoll] = 0.06 * s; out[P.torsoTwist] = 0.12 * s;
+      out[P.headPitch] = -0.75; out[P.headYaw] = 0.15 * (1 - c);
+      out[P.lShX] = -2.1 - 0.5 * s; out[P.rShX] = -1.4 + 0.5 * s; out[P.lShZ] = 0.35; out[P.rShZ] = 0.6;
+      out[P.lEl] = 0.5 + 0.5 * c * (0.5 + 0.5 * Math.sin(phase)); out[P.rEl] = 0.9 + 0.5 * c * (0.5 - 0.5 * Math.sin(phase));
+      out[P.lHipX] = 0.1 + 0.25 * s; out[P.rHipX] = 0.1 - 0.25 * s; out[P.lHipZ] = 0.15; out[P.rHipZ] = 0.2;
+      out[P.lKnee] = 0.2 + 0.7 * c * Math.max(0, Math.sin(phase)); out[P.rKnee] = 0.35 + 0.7 * c * Math.max(0, -Math.sin(phase));
       break;
     }
     case 'grabbed': { // victim: limp, slightly lifted, arms loose, head hanging
@@ -875,6 +889,7 @@ export class NinjaModel {
   private iris: THREE.Mesh | null = null;
   private irisMatBase: THREE.Material | null = null;
   private tomoe: THREE.Mesh | null = null;
+  private tint: number | null = null;
 
   constructor(readonly look: NinjaLook) {
     const g = sharedGeo();
@@ -1074,6 +1089,7 @@ export class NinjaModel {
     this.clock += dt;
     if (anim === 'run' || anim === 'climb') this.phase += dt * speed * ANIM.strideRun;
     else if (anim === 'sprint') this.phase += dt * speed * ANIM.strideSprint;
+    else if (anim === 'downed') this.phase += dt * speed * ANIM.strideCrawl;
     computePose(anim, animTime, this.phase, this.clock, speed, this.target);
     const rate = anim === 'dead' ? ANIM.blendDead : ACTION_STATES.has(anim) ? ANIM.blendAction : ANIM.blendLoop;
     const k = 1 - Math.exp(-rate * dt);
@@ -1278,6 +1294,15 @@ export class NinjaModel {
     }
     this.iris.material = on ? x.sharingan : this.irisMatBase;
     if (this.tomoe) this.tomoe.visible = on;
+  }
+  /** Coloured rim on every body material (PvP team red/blue), null removes it. Cheap when unchanged. */
+  setTeamTint(color: number | null): void {
+    if (color === this.tint) return;
+    this.tint = color;
+    for (const m of this.mats) (m.userData.rimTint as THREE.Color | undefined)?.setHex(color ?? 0);
+  }
+  get teamTint(): number | null {
+    return this.tint;
   }
   /** Guard bubble/pose highlight. */
   setGuard(on: boolean): void {

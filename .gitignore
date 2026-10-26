@@ -28,3 +28,4 @@ graphify-out/
 *.blend1
 art/*.png
 art/build_log.txt
+dist-server/

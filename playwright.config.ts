@@ -1,6 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 4173;
+/** Two host servers (with --debug test commands): co-op and PvP tests each get a fresh world state. */
+export const HOST_PORT = 5181;
+export const PVP_PORT = 5182;
 
 export default defineConfig({
   testDir: 'tests/e2e',
@@ -21,10 +24,19 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], launchOptions: { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] } },
     },
   ],
-  webServer: {
-    command: `npm run build && npx vite preview --port ${PORT} --strictPort`,
-    url: `http://localhost:${PORT}`,
-    reuseExistingServer: true,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: `npm run build && npx vite build --ssr server/main.ts --outDir dist-server && npx vite preview --port ${PORT} --strictPort`,
+      url: `http://localhost:${PORT}`,
+      reuseExistingServer: true,
+      timeout: 180_000,
+    },
+    ...[HOST_PORT, PVP_PORT].map((port) => ({
+      // Host servers (built by the first command) for the online tests: page + /ws, fixed seed, debug commands on.
+      command: `node dist-server/main.js --port ${port} --seed 1337 --debug`,
+      url: `http://localhost:${port}`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    })),
+  ],
 });

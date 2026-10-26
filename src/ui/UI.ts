@@ -1,14 +1,22 @@
-import type { GameApi } from '../game/Game';
+import type { Game, GameApi } from '../game/Game';
 import type { CharacterId, GameState, HudData, QteDir } from '../core/types';
+import type { ModeState } from '../sim/missions/types';
 import { SETTINGS_LIMITS, UI_CONFIG, type Settings } from '../config/settings';
 import { CHARACTERS, CHARACTER_IDS } from '../config/characters';
+import { MINIMAP } from '../config/minimap';
 import { browserStorage, loadSettings, sanitizeSettings, saveSettings } from './settingsStore';
 import { QTE_DIR_LABELS, QTE_GLYPHS, qteArrowState, qteBanner } from './qteView';
+import { MapView } from './MapView';
+import { formatTime, mapRotation } from './minimapMath';
+import { modeView } from './modeView';
 
-type Overlay = 'character' | 'controls' | 'settings' | null;
+type Overlay = 'character' | 'controls' | 'settings' | 'lobby' | null;
+
+/** What the UI reads from the client: GameApi plus the v5 online/mode getters of `Game`. */
+export type UiGame = GameApi & Pick<Game, 'modeState' | 'markers' | 'players' | 'myPlayerId' | 'isHost' | 'kick' | 'world' | 'me' | 'views' | 'cameraYaw'>;
 
 /** Help rows; 'special' text comes from the selected character. */
-const COMMANDS: [keyof GameApi['keyLabels'] | 'move' | 'climb', string][] = [
+const COMMANDS: [keyof GameApi['keyLabels'] | 'move' | 'climb' | 'map', string][] = [
   ['move', 'Se déplacer'], ['boost', 'Double appui avant et maintenir : course ultra-rapide'],
   ['sprint', 'Appui : ruée de chakra (dash) vers la cible · maintenu : course ninja'],
   ['jump', 'Sauter, double saut en l’air'], ['climb', 'Courez contre un mur : escalade automatique et rapide'],
@@ -16,28 +24,30 @@ const COMMANDS: [keyof GameApi['keyLabels'] | 'move' | 'climb', string][] = [
   ['grab', 'Saisie : clic gauche + droit ensemble, puis les 6 flèches dans l’ordre (touches fléchées, ZQSD/WASD ou clic)'],
   ['kunai', 'Lancer un kunaï (visée assistée si la cible est en vue)'], ['concentrate', 'Concentrer le chakra'],
   ['dodge', 'Esquive · quand vous êtes touché : permutation (substitution)'],
-  ['lockOn', 'Verrouiller une cible'], ['switchTarget', 'Changer de cible'], ['pause', 'Pause'],
+  ['lockOn', 'Verrouiller une cible'], ['switchTarget', 'Changer de cible'],
+  ['interact', 'Sur un carré de départ : changer de mission / d’arène · près d’un allié à terre : maintenir pour relever'],
+  ['map', 'Carte du monde (molette : zoom)'], ['pause', 'Pause / menu'],
 ];
+const ESC = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const store = browserStorage;
 const QTE_SLOTS = 6; // arrow buttons in the template (#qte-arrow-0..5)
 
 const pct = (v: number, max: number) => (max > 0 ? Math.max(0, Math.min(1, v / max)) : 0);
 
 /**
- * DOM UI: main menu, controls help, HUD, pause, settings, victory/defeat.
- * Owner: UI agent. Reads the game only through GameApi.
+ * DOM UI: main menu (solo / multijoueur lobby), controls help, HUD, minimap and full map, co-op / PvP HUD and
+ * results, pause (with the online players list), settings. Owner: UI agent. Reads the game only through UiGame.
  */
 export class UI {
   private readonly el: Record<string, HTMLElement> = {};
   private overlay: Overlay = null;
   /** Where the controls card was opened from (shows "Commencer" only from the menu). */
   private overlayFromMenu = false;
-  private wavesCleared = 0;
   private lastHp = -1;
   private hpTrail = 1;
   private hpTrailDelay = 0;
   private vignette = 0;
   private chakraFail = 0;
-  private banner = 0;
   /** Last written text/style per key, so update() only touches the DOM on change. */
   private readonly written = new Map<string, string>();
   private readonly enemyPool: { root: HTMLElement; fill: HTMLElement }[] = [];
@@ -46,19 +56,40 @@ export class UI {
   private pendingChar: CharacterId = 'naruto';
   /** Index of the last wrong arrow click in the current grab sequence (-1 if none). */
   private qteWrong = -1;
+  private readonly map: MapView;
+  private mapOpen = false;
+  private northUp = false;
+  /** Render clock (s): pulses only. */
+  private clock = 0;
+  private lobbyChar: CharacterId = 'naruto';
+  private joining = false;
+  private playersSig = '';
+  private readonly mateBars: { root: HTMLElement; name: HTMLElement; fill: HTMLElement }[] = [];
 
-  constructor(private readonly root: HTMLElement, private readonly game: GameApi) {
+  constructor(private readonly root: HTMLElement, private readonly game: UiGame) {
     root.innerHTML = TEMPLATE;
     root.querySelectorAll<HTMLElement>('[id]').forEach((n) => { this.el[n.id] = n; });
 
     const settings = loadSettings(browserStorage());
     this.game.applySettings(settings);
     this.fillSettingsForm(settings);
+    this.map = new MapView(this.el['minimap'] as HTMLCanvasElement, this.el['fullmap-canvas'] as HTMLCanvasElement);
+    try { this.northUp = store()?.getItem(MINIMAP.northUpStorageKey) === '1'; } catch { /* blocked storage */ }
+    (this.el['settings-northup'] as HTMLInputElement).checked = this.northUp;
+    try { (this.el['lobby-name'] as HTMLInputElement).value = store()?.getItem(MINIMAP.nameStorageKey) ?? ''; } catch { /* blocked storage */ }
 
     const click = (id: string, fn: () => void) => this.el[id].addEventListener('click', () => { this.game.uiClick(); fn(); });
     click('btn-play', () => this.openOverlay('character', true));
-    click('btn-char-victory', () => this.openOverlay('character', false));
-    click('btn-char-defeat', () => this.openOverlay('character', false));
+    click('btn-multi', () => this.openOverlay('lobby', true));
+    click('btn-lobby-join', () => void this.join());
+    click('btn-lobby-back', () => this.openOverlay(null));
+    for (const id of CHARACTER_IDS) click(`lobby-char-${id}`, () => this.pickLobbyChar(id));
+    this.el['lobby-name'].addEventListener('keydown', (e) => { if (e.key === 'Enter') void this.join(); });
+    click('btn-fullmap-close', () => this.toggleMap(false));
+    this.el['players-list'].addEventListener('click', (e) => {
+      const id = (e.target as HTMLElement).closest<HTMLElement>('[data-kick]')?.dataset.kick;
+      if (id) { this.game.uiClick(); this.game.kick(Number(id)); }
+    });
     click('btn-char-confirm', () => this.confirmCharacter());
     click('btn-char-back', () => this.openOverlay(null));
     for (const id of CHARACTER_IDS) click(`char-${id}`, () => this.pickCharacter(id));
@@ -88,10 +119,6 @@ export class UI {
     click('btn-settings', () => this.openOverlay('settings', false));
     click('btn-controls-pause', () => this.openOverlay('controls', false));
     click('btn-menu', () => this.game.quitToMenu());
-    click('btn-retry', () => { this.resetRun(); this.game.restart(); });
-    click('btn-retry-defeat', () => { this.resetRun(); this.game.restart(); });
-    click('btn-victory-menu', () => this.game.quitToMenu());
-    click('btn-defeat-menu', () => this.game.quitToMenu());
     click('btn-controls-back', () => this.openOverlay(null));
     click('btn-settings-back', () => this.openOverlay(null));
     this.el['settings-panel'].addEventListener('input', () => this.onSettingsInput());
@@ -100,19 +127,19 @@ export class UI {
     window.addEventListener('keydown', (e) => {
       // The game only handles Escape while playing/paused; close menu overlays ourselves.
       const st = this.game.state;
-      if (e.code === 'Escape' && this.overlay && (st === 'menu' || st === 'victory' || st === 'defeat')) this.openOverlay(null);
+      if (e.code === 'Escape' && this.overlay && st === 'menu') this.openOverlay(null);
+      // M toggles the full map while playing (the map uses the "paused" state to free the cursor; online the game goes on).
+      if (e.code === 'KeyM' && !e.repeat && this.game.world && (st === 'playing' || (st === 'paused' && this.mapOpen))) {
+        e.preventDefault();
+        this.toggleMap(!this.mapOpen);
+      }
     });
 
     const ev = this.game.events;
-    ev.on('stateChange', () => {
+    ev.on('stateChange', (e) => {
       this.overlay = null;
+      if (e.state !== 'paused') this.mapOpen = false;
       this.render();
-    });
-    ev.on('waveCleared', (e) => { this.wavesCleared = Math.max(this.wavesCleared, e.wave); });
-    ev.on('waveStart', (e) => {
-      this.el['hud-banner'].textContent = e.wave === e.totalWaves ? `Vague finale ${e.wave}/${e.totalWaves}` : `Vague ${e.wave}/${e.totalWaves}`;
-      this.banner = UI_CONFIG.bannerTime;
-      this.restartAnim(this.el['hud-banner']);
     });
     ev.on('grabStart', () => { this.qteWrong = -1; });
     ev.on('qteInput', (e) => {
@@ -130,12 +157,16 @@ export class UI {
   update(frameDt: number): void {
     const s = this.game.settings;
     this.setHidden('hud-fps', !s.showFps);
+    this.clock += frameDt;
+    if (this.mapOpen) this.drawMap(true);
+    if (this.game.state === 'paused' && this.game.online && !this.mapOpen) this.updatePlayers();
     if (this.game.state !== 'playing') return;
     const d = this.game.getHudData();
     if (s.showFps) this.text('hud-fps', `${Math.round(d.fps)} FPS`);
     this.updateBars(d, frameDt);
     this.updateCooldowns(d);
-    this.updateWave(d);
+    this.drawMap(false);
+    this.updateMode();
     this.updateLock(d);
     this.updateEnemyBars(d);
     this.updateCharge(d);
@@ -146,8 +177,6 @@ export class UI {
     this.chakraFail = Math.max(0, this.chakraFail - frameDt);
     this.setHidden('hud-chakra-msg', this.chakraFail <= 0);
     this.el['hud-chakra'].classList.toggle('fail', this.chakraFail > 0);
-    this.banner = Math.max(0, this.banner - frameDt);
-    this.setHidden('hud-banner', this.banner <= 0);
   }
 
   // ---------- screens ----------
@@ -155,27 +184,32 @@ export class UI {
   private render(): void {
     const st: GameState = this.game.state;
     const ov = this.overlay;
+    const online = this.game.online;
     this.setHidden('main-menu', st !== 'menu' || ov !== null);
     this.setHidden('hud', st !== 'playing');
-    this.setHidden('pause-menu', st !== 'paused' || ov !== null);
-    this.setHidden('victory-screen', st !== 'victory' || ov !== null);
-    this.setHidden('defeat-screen', st !== 'defeat' || ov !== null);
+    this.setHidden('pause-menu', st !== 'paused' || ov !== null || this.mapOpen);
+    this.setHidden('fullmap', !this.mapOpen || st !== 'paused');
+    this.setHidden('pause-online', !online);
+    this.setHidden('btn-restart', online);
+    this.text('pause-title', online ? 'Menu' : 'Pause');
+    this.text('btn-menu', online ? 'Quitter la partie' : 'Menu principal');
+    this.playersSig = '';
+    if (st === 'paused' && online) this.updatePlayers();
+    this.setHidden('lobby-panel', ov !== 'lobby');
     this.setHidden('char-panel', ov !== 'character');
     this.setHidden('controls-panel', ov !== 'controls');
     this.setHidden('settings-panel', ov !== 'settings');
     this.setHidden('btn-start-fight', !this.overlayFromMenu);
-    this.root.classList.toggle('dim', st !== 'playing');
+    this.root.classList.toggle('dim', st !== 'playing' && !this.mapOpen);
     const c = CHARACTERS[this.game.character];
     this.el['menu-character'].textContent = `Personnage : ${c.name} — ${c.specialLabel}`;
     this.el['menu-character'].className = `menu-character accent-${this.game.character}`;
     this.el['btn-char-confirm'].textContent = this.overlayFromMenu ? 'Continuer' : 'Valider';
 
-    const n = this.wavesCleared;
-    if (st === 'victory') this.el['victory-stats'].textContent = `Les ${n || 'cinq'} vagues ont été repoussées. Le village est sauf.`;
-    if (st === 'defeat') this.el['defeat-stats'].textContent = n > 0 ? `Vagues franchies : ${n}` : 'Aucune vague franchie.';
-
     if (ov === 'character') { this.el[`char-${this.pendingChar}`].focus(); return; }
-    const visible = ['controls-panel', 'settings-panel', 'main-menu', 'pause-menu', 'victory-screen', 'defeat-screen']
+    if (ov === 'lobby') { this.el['lobby-name'].focus(); return; }
+    if (this.mapOpen) return;
+    const visible = ['controls-panel', 'settings-panel', 'main-menu', 'pause-menu']
       .map((id) => this.el[id]).find((e) => !e.hidden);
     visible?.querySelector<HTMLElement>('button:not([hidden]), input, select')?.focus();
   }
@@ -185,7 +219,202 @@ export class UI {
     this.overlayFromMenu = fromMenu;
     if (ov === 'controls') this.fillControls();
     if (ov === 'character') this.pickCharacter(this.game.character);
+    if (ov === 'lobby') { this.pickLobbyChar(this.game.character); this.lobbyStatus(''); }
     this.render();
+  }
+
+  // ---------- lobby / online ----------
+
+  private pickLobbyChar(id: CharacterId): void {
+    this.lobbyChar = id;
+    for (const c of CHARACTER_IDS) this.el[`lobby-char-${c}`].setAttribute('aria-pressed', String(c === id));
+  }
+
+  private lobbyStatus(msg: string, error = false): void {
+    this.el['lobby-status'].textContent = msg;
+    this.el['lobby-status'].classList.toggle('error', error);
+  }
+
+  /** Saves name + character, then joins the host that served this page. */
+  private async join(): Promise<void> {
+    if (this.joining) return;
+    const input = this.el['lobby-name'] as HTMLInputElement;
+    const name = input.value.trim().slice(0, MINIMAP.nameMaxLength);
+    if (!name) { this.lobbyStatus('Entrez un nom de joueur.', true); input.focus(); return; }
+    try { store()?.setItem(MINIMAP.nameStorageKey, name); } catch { /* blocked storage */ }
+    const s = sanitizeSettings({ ...this.game.settings, character: this.lobbyChar });
+    this.game.applySettings(s);
+    saveSettings(store(), s);
+    this.joining = true;
+    (this.el['btn-lobby-join'] as HTMLButtonElement).disabled = true;
+    this.lobbyStatus('Connexion au serveur…');
+    try {
+      await this.game.joinOnline(name);
+    } catch (err) {
+      this.lobbyStatus(err instanceof Error ? err.message : String(err), true);
+    } finally {
+      this.joining = false;
+      (this.el['btn-lobby-join'] as HTMLButtonElement).disabled = false;
+    }
+  }
+
+  /** Players list of the online menu (rebuilt only when it changes); the host gets an "Exclure" button per player. */
+  private updatePlayers(): void {
+    const me = this.game.myPlayerId, host = this.game.isHost;
+    const list = this.game.players();
+    const sig = `${host}|${me}|${list.map((p) => `${p.id}:${p.name}:${p.character}:${p.ping}:${p.connected}`).join(',')}`;
+    if (sig === this.playersSig) return;
+    this.playersSig = sig;
+    this.el['players-list'].innerHTML = list.map((p) => `<li class="player-row${p.id === me ? ' me' : ''}${p.connected ? '' : ' away'}">
+      <span class="player-name accent-${p.character}">${ESC(p.name)}${p.id === me ? ' (vous)' : ''}</span>
+      <span class="player-char">${CHARACTERS[p.character].name}</span>
+      <span class="player-ping">${p.connected ? `${Math.round(p.ping)} ms` : 'déconnecté'}</span>
+      ${host && p.id !== me ? `<button type="button" class="kick" data-kick="${p.id}" id="btn-kick-${p.id}">Exclure</button>` : '<span></span>'}
+    </li>`).join('');
+    this.text('players-count', `Joueurs connectés : ${list.filter((p) => p.connected).length} / 6`);
+  }
+
+  // ---------- maps ----------
+
+  private toggleMap(open: boolean): void {
+    if (open === this.mapOpen) return;
+    if (open) {
+      this.mapOpen = true;
+      this.map.resetFull();
+      this.game.pause(); // frees the cursor for the wheel; online the match goes on
+      this.render();
+      this.drawMap(true);
+    } else {
+      this.mapOpen = false;
+      this.game.resume();
+      this.render();
+    }
+  }
+
+  private drawMap(full: boolean): void {
+    const world = this.game.world;
+    this.setHidden('minimap-box', !world);
+    if (!world) return;
+    const me = this.game.me();
+    const f = {
+      world, markers: this.game.markers(), time: this.clock,
+      me: me ? { x: me.position.x, z: me.position.z, yaw: me.yaw, team: me.team } : null,
+      rot: full ? 0 : mapRotation(this.game.cameraYaw, this.northUp),
+    };
+    if (full) this.map.drawFull(f); else this.map.drawMini(f);
+  }
+
+  // ---------- co-op / PvP HUD ----------
+
+  private updateMode(): void {
+    const mode = this.game.modeState();
+    const world = this.game.world;
+    const me = this.game.me();
+    const v = mode && world ? modeView({
+      mode, markers: this.game.markers(), squares: world.squares,
+      pos: me ? { x: me.position.x, z: me.position.z } : null,
+      myActorId: me?.id ?? -1, myPlayerId: this.game.myPlayerId, interactKey: this.game.keyLabels.interact,
+    }) : null;
+
+    this.setHidden('mode-board', !v?.board);
+    if (v?.board) {
+      this.text('mode-board-title', v.board.title);
+      this.text('mode-board-hint', v.board.hint);
+      this.text('mode-board-team', v.board.team ? `Vous êtes dans l’équipe ${v.board.team === 'red' ? 'rouge' : 'bleue'}` : '');
+      this.el['mode-board'].className = v.board.team ? `team-${v.board.team}` : '';
+      this.text('mode-board-blocked', v.board.blocked ?? '');
+      this.setHidden('mode-board-blocked', !v.board.blocked);
+    }
+    this.setHidden('mode-countdown', !v?.countdown);
+    if (v?.countdown) this.text('mode-countdown', v.countdown);
+    this.setHidden('mode-objective', !v?.objective);
+    if (v?.objective) {
+      this.text('mode-objective-text', v.objective.text);
+      this.text('mode-objective-timer', v.objective.timer ? `Temps restant ${v.objective.timer}` : '');
+    }
+    this.setHidden('mode-downed', !v?.downed);
+    if (v?.downed) { this.text('mode-downed-text', v.downed.text); this.text('mode-downed-timer', v.downed.timer); }
+    this.setHidden('mode-revive', !v?.revive);
+    if (v?.revive) {
+      this.text('mode-revive-text', v.revive.text);
+      this.style('mode-revive-fill', 'transform', `scaleX(${v.revive.progress.toFixed(3)})`);
+    }
+    this.setHidden('pvp-score', !v?.pvp);
+    this.el['hud-lock'].classList.toggle('below-score', !!v?.pvp);
+    if (v?.pvp) {
+      this.text('pvp-score-red', String(v.pvp.red));
+      this.text('pvp-score-blue', String(v.pvp.blue));
+      this.text('pvp-round', v.pvp.round);
+      this.text('pvp-timer', v.pvp.timer);
+    }
+    this.updateMates(mode, me);
+    this.updateKillFeed(mode);
+    this.updateResults(mode);
+  }
+
+  /** PvP: HP bars of the local player's teammates. */
+  private updateMates(mode: ModeState | null, me: ReturnType<UiGame['me']>): void {
+    const pvpOn = mode?.pvp.phase === 'running' && !!me;
+    const mates = pvpOn ? this.game.views().filter((a) => a.kind === 'player' && a.id !== me!.id && a.team === me!.team && !a.removed) : [];
+    const layer = this.el['pvp-mates'];
+    this.setHidden('pvp-mates', mates.length === 0);
+    while (this.mateBars.length < mates.length) {
+      const root = document.createElement('div');
+      root.className = 'mate';
+      root.innerHTML = '<span class="mate-name"></span><div class="bar"><div class="fill"></div></div>';
+      layer.appendChild(root);
+      this.mateBars.push({ root, name: root.querySelector('.mate-name')!, fill: root.querySelector('.fill')! });
+    }
+    this.mateBars.forEach((b, i) => {
+      const a = mates[i];
+      b.root.hidden = !a;
+      if (!a) return;
+      if (b.name.textContent !== a.name) b.name.textContent = a.name;
+      b.fill.style.transform = `scaleX(${pct(a.hp, a.maxHp).toFixed(3)})`;
+      b.root.classList.toggle('ko', a.hp <= 0);
+    });
+  }
+
+  private updateKillFeed(mode: ModeState | null): void {
+    const feed = mode?.pvp.phase === 'running' ? mode.pvp.killFeed : [];
+    const sig = feed.map((k) => `${k.killer}>${k.victim}@${k.time}`).join('|');
+    this.setHidden('pvp-killfeed', feed.length === 0);
+    if (this.written.get('killfeed') === sig) return;
+    this.written.set('killfeed', sig);
+    this.el['pvp-killfeed'].innerHTML = feed.map((k) => `<li><b>${ESC(k.killer)}</b> a mis K.O. <b>${ESC(k.victim)}</b></li>`).join('');
+  }
+
+  /** Co-op and PvP results screens (built once per result, countdown updated each frame). */
+  private updateResults(mode: ModeState | null): void {
+    const coop = mode?.coop.phase === 'results' ? mode.coop : null;
+    const pvp = mode?.pvp.phase === 'results' ? mode.pvp : null;
+    this.setHidden('coop-results', !coop?.results);
+    this.setHidden('pvp-results', !pvp?.results);
+    if (coop?.results) {
+      const r = coop.results;
+      this.text('coop-results-title', r.victory ? 'Mission accomplie !' : 'Mission échouée…');
+      this.el['coop-results-title'].className = `brush ${r.victory ? 'win' : 'lose'}`;
+      this.text('coop-results-sub', `${coop.title} — temps ${formatTime(r.time)}`);
+      this.table('coop-results-table', ['Joueur', 'Ennemis vaincus', 'Alliés relevés'], r.players.map((p) => [p.name, p.kills, p.revives]));
+      this.text('coop-results-return', `Retour au village dans ${Math.ceil(coop.countdown)} s`);
+    }
+    if (pvp?.results) {
+      const r = pvp.results;
+      const mine = r.players.find((p) => p.id === this.game.myPlayerId)?.team;
+      this.text('pvp-results-title', mine ? (mine === r.winner ? 'Victoire !' : 'Défaite…') : `Victoire de l’équipe ${r.winner === 'red' ? 'rouge' : 'bleue'}`);
+      this.el['pvp-results-title'].className = `brush ${!mine || mine === r.winner ? 'win' : 'lose'}`;
+      this.text('pvp-results-sub', `Manches : Rouge ${r.rounds.red} – ${r.rounds.blue} Bleu`);
+      this.table('pvp-results-table', ['Joueur', 'Équipe', 'Dégâts', 'K.O.'],
+        r.players.map((p) => [p.name, p.team === 'red' ? 'Rouge' : 'Bleu', Math.round(p.damage), p.kos]));
+      this.text('pvp-results-return', pvp.countdown > 0 ? `Retour au carré dans ${Math.ceil(pvp.countdown)} s` : '');
+    }
+  }
+
+  private table(id: string, head: string[], rows: (string | number)[][]): void {
+    const html = `<thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${ESC(String(c))}</td>`).join('')}</tr>`).join('')}</tbody>`;
+    if (this.written.get(id) === html) return;
+    this.written.set(id, html);
+    this.el[id].innerHTML = html;
   }
 
   private pickCharacter(id: CharacterId): void {
@@ -211,7 +440,7 @@ export class UI {
       const c = CHARACTERS[this.game.character];
       const charged = c.special !== 'sharingan';
       key.textContent = action === 'move' ? `${k.forward} ${k.left} ${k.back} ${k.right}`
-        : action === 'climb' ? `${k.forward} → mur` : action === 'special' && charged ? `${k.special} (maintenir)` : k[action];
+        : action === 'climb' ? `${k.forward} → mur` : action === 'map' ? 'M' : action === 'special' && charged ? `${k.special} (maintenir)` : k[action];
       const desc = document.createElement('span');
       desc.textContent = action === 'special' ? `${c.specialLabel} — ${c.blurb}` : label;
       row.append(key, desc);
@@ -221,10 +450,9 @@ export class UI {
   }
 
   private resetRun(): void {
-    this.wavesCleared = 0;
     this.lastHp = -1;
     this.hpTrail = 1;
-    this.vignette = this.chakraFail = this.banner = 0;
+    this.vignette = this.chakraFail = 0;
   }
 
   // ---------- settings ----------
@@ -255,6 +483,8 @@ export class UI {
     this.game.applySettings(s);
     saveSettings(browserStorage(), s);
     this.fillSettingsForm(s);
+    this.northUp = (this.el['settings-northup'] as HTMLInputElement).checked;
+    try { store()?.setItem(MINIMAP.northUpStorageKey, this.northUp ? '1' : '0'); } catch { /* blocked storage */ }
   }
 
   private form() {
@@ -328,14 +558,6 @@ export class UI {
       if (this.written.get(`${k}t`) !== t) { this.written.set(`${k}t`, t); slot.time.textContent = t; }
       slot.root.classList.toggle('disabled', !c.usable);
     });
-  }
-
-  private updateWave(d: HudData): void {
-    this.text('hud-wave', d.wave > 0 ? `Vague ${d.wave}/${d.totalWaves}` : 'Préparez-vous');
-    this.text('hud-enemies', `Ennemis restants : ${d.enemiesRemaining}`);
-    const inter = d.intermission > 0;
-    this.setHidden('hud-intermission', !inter);
-    if (inter) this.text('hud-intermission', `Prochaine vague dans ${Math.ceil(d.intermission)}`);
   }
 
   private updateLock(d: HudData): void {
@@ -444,9 +666,27 @@ const TEMPLATE = /* html */ `
   <p class="tagline">L’arène des ninjas</p>
   <p id="menu-character" class="menu-character"></p>
   <div class="buttons">
-    <button id="btn-play" class="primary">Jouer</button>
+    <button id="btn-play" class="primary">Solo</button>
+    <button id="btn-multi" class="primary">Multijoueur</button>
     <button id="btn-controls">Commandes</button>
     <button id="btn-settings-main">Paramètres</button>
+  </div>
+</section>
+
+<section id="lobby-panel" class="screen panel scroll" hidden aria-labelledby="lobby-title">
+  <h2 id="lobby-title" class="brush">Multijoueur</h2>
+  <div class="field lobby-field">
+    <label for="lobby-name">Nom du joueur</label>
+    <input id="lobby-name" type="text" maxlength="${MINIMAP.nameMaxLength}" autocomplete="nickname" spellcheck="false" />
+  </div>
+  <div class="lobby-chars" role="group" aria-label="Personnage">
+    ${CHARACTER_IDS.map((id) => `<button id="lobby-char-${id}" type="button" class="lobby-char accent-${id}" aria-pressed="false">${CHARACTERS[id].name}<small>${CHARACTERS[id].specialLabel}</small></button>`).join('')}
+  </div>
+  <p class="muted">Le jeu en ligne fonctionne quand la page est servie par l’hôte (commande « npm run host »). Jusqu’à 6 joueurs ; plusieurs joueurs peuvent choisir le même ninja.</p>
+  <p id="lobby-status" role="status" aria-live="polite"></p>
+  <div class="buttons row">
+    <button id="btn-lobby-join" class="primary">Rejoindre</button>
+    <button id="btn-lobby-back">Retour</button>
   </div>
 </section>
 
@@ -468,7 +708,7 @@ const TEMPLATE = /* html */ `
 
 <section id="controls-panel" class="screen panel scroll" hidden aria-labelledby="controls-title">
   <h2 id="controls-title" class="brush">Commandes</h2>
-  <p class="goal">Objectif : <strong>Survivez aux 5 vagues</strong> de ninjas ennemis.</p>
+  <p class="goal">Explorez le village. Entrez dans le <strong>carré bleu</strong> devant le QG pour lancer une mission, ou dans un <strong>carré rouge / bleu</strong> pour un combat entre joueurs.</p>
   <ul id="controls-list" class="controls"></ul>
   <p id="controls-layout" class="muted"></p>
   <p class="muted">Cliquez dans le jeu pour capturer la souris. Échap met le jeu en pause.</p>
@@ -510,6 +750,10 @@ const TEMPLATE = /* html */ `
     </select>
   </div>
   <div class="field">
+    <label for="settings-northup">Minimap orientée nord</label>
+    <input id="settings-northup" type="checkbox" />
+  </div>
+  <div class="field">
     <label for="settings-fps">Afficher les FPS</label>
     <input id="settings-fps" type="checkbox" />
   </div>
@@ -525,26 +769,16 @@ const TEMPLATE = /* html */ `
     <button id="btn-controls-pause">Commandes</button>
     <button id="btn-menu">Menu principal</button>
   </div>
-</section>
-
-<section id="victory-screen" class="screen panel" hidden aria-labelledby="victory-title">
-  <h2 id="victory-title" class="brush win">Victoire !</h2>
-  <p id="victory-stats"></p>
-  <div class="buttons">
-    <button id="btn-retry" class="primary">Recommencer</button>
-    <button id="btn-char-victory">Changer de personnage</button>
-    <button id="btn-victory-menu">Menu principal</button>
+  <div id="pause-online" hidden>
+    <p class="online-note">La partie continue</p>
+    <p id="players-count" class="muted"></p>
+    <ul id="players-list" class="players"></ul>
   </div>
 </section>
 
-<section id="defeat-screen" class="screen panel" hidden aria-labelledby="defeat-title">
-  <h2 id="defeat-title" class="brush lose">Défaite…</h2>
-  <p id="defeat-stats"></p>
-  <div class="buttons">
-    <button id="btn-retry-defeat" class="primary">Recommencer</button>
-    <button id="btn-char-defeat">Changer de personnage</button>
-    <button id="btn-defeat-menu">Menu principal</button>
-  </div>
+<section id="fullmap" hidden aria-label="Carte du monde">
+  <canvas id="fullmap-canvas"></canvas>
+  <div class="fullmap-bar"><span>Carte — molette : zoom · <kbd>M</kbd> / <kbd>Échap</kbd> : fermer</span><button id="btn-fullmap-close">Fermer</button></div>
 </section>
 
 <div id="hud" hidden>
@@ -553,12 +787,27 @@ const TEMPLATE = /* html */ `
   <div id="hud-crosshair"></div>
   <div id="hud-charge" hidden><div class="charge-ring"></div><span id="hud-charge-val"></span></div>
   <div id="hud-lock" hidden><span id="hud-lock-name"></span><div class="bar"><div id="hud-lock-fill" class="fill"></div></div></div>
-  <div id="hud-banner" hidden></div>
-  <div id="hud-wavebox">
-    <div id="hud-wave"></div>
-    <div id="hud-enemies"></div>
-    <div id="hud-intermission" hidden></div>
+  <div id="minimap-box" hidden><canvas id="minimap" width="${MINIMAP.sizePx}" height="${MINIMAP.sizePx}" aria-label="Minimap"></canvas><kbd class="minimap-key">M</kbd></div>
+  <div id="mode-objective" hidden><div id="mode-objective-text"></div><div id="mode-objective-timer"></div></div>
+  <div id="pvp-score" hidden>
+    <span class="pvp-team red">Rouge <b id="pvp-score-red"></b></span>
+    <span class="pvp-mid"><span id="pvp-round"></span><span id="pvp-timer"></span></span>
+    <span class="pvp-team blue"><b id="pvp-score-blue"></b> Bleu</span>
   </div>
+  <div id="pvp-mates" hidden></div>
+  <ul id="pvp-killfeed" hidden></ul>
+  <div id="mode-board" hidden><div id="mode-board-title"></div><div id="mode-board-team"></div><div id="mode-board-hint"></div><div id="mode-board-blocked" hidden></div></div>
+  <div id="mode-countdown" hidden></div>
+  <div id="mode-downed" hidden><div id="mode-downed-text"></div><div id="mode-downed-timer"></div></div>
+  <div id="mode-revive" hidden><div id="mode-revive-text"></div><div class="bar"><div id="mode-revive-fill" class="fill"></div></div></div>
+  <section id="coop-results" class="screen results" hidden aria-labelledby="coop-results-title">
+    <h2 id="coop-results-title" class="brush"></h2><p id="coop-results-sub"></p>
+    <table id="coop-results-table" class="results-table"></table><p id="coop-results-return" class="muted"></p>
+  </section>
+  <section id="pvp-results" class="screen results" hidden aria-labelledby="pvp-results-title">
+    <h2 id="pvp-results-title" class="brush"></h2><p id="pvp-results-sub"></p>
+    <table id="pvp-results-table" class="results-table"></table><p id="pvp-results-return" class="muted"></p>
+  </section>
   <div id="hud-player">
     <div id="hud-hp" class="bar big"><div id="hud-hp-trail" class="trail"></div><div id="hud-hp-fill" class="fill"></div><span id="hud-hp-val" class="val"></span></div>
     <div id="hud-chakra" class="bar big"><div id="hud-chakra-fill" class="fill"></div><span id="hud-chakra-val" class="val"></span></div>

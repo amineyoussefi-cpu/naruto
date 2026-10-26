@@ -144,7 +144,12 @@ export type ClientMsg =
   | { t: 'hello'; version: number; name: string; character: CharacterId }
   | { t: 'character'; character: CharacterId }
   | { t: 'kick'; playerId: PlayerId }
-  | { t: 'ping'; time: number };
+  | { t: 'ping'; time: number }
+  /** Test tooling, honoured only by a server started with `--debug` (and by solo): teleport self, set an actor's HP. */
+  | { t: 'debug'; op: 'teleport'; x: number; y: number; z: number }
+  | { t: 'debug'; op: 'hp'; actorId: number; hp: number };
+
+export type DebugMsg = Extract<ClientMsg, { t: 'debug' }>;
 
 /** Server → client messages. Snapshots travel as binary frames (codec), the rest as JSON text frames. */
 export type ServerMsg =

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COMBAT, MOVEMENT, SIM_DT, WAVES, DEFAULT_SETTINGS, type Settings } from '../config';
+import { COMBAT, MOVEMENT, SIM_DT, DEFAULT_SETTINGS, type Settings } from '../config';
 import { EventBus } from '../core/events';
 import { FixedStepper } from '../core/loop';
 import { InputManager, KEY_LABELS, type Action } from '../core/input';
@@ -7,14 +7,24 @@ import type { CharacterId, GameState, HudData, QteDir } from '../core/types';
 import { PhysicsWorld } from '../sim/physics/PhysicsWorld';
 import { CHARACTERS } from '../config/characters';
 import { hitFeedback } from '../sim/combat/CombatSystem';
-import { actionBit, INPUT_ACTIONS, type ActorInfo, type ActorState, type PlayerInput, type ServerMsg, type Snapshot } from '../sim/protocol';
+import { ACTOR_FLAGS, actionBit, INPUT_ACTIONS, type ActorInfo, type ActorState, type DebugMsg, type PlayerInput, type ServerMsg, type Snapshot } from '../sim/protocol';
 import type { Connection } from '../net/connection';
 import { LocalHost } from '../net/LocalHost';
+import { NetClient } from '../net/NetClient';
+import { SnapshotBuffer } from '../net/interpolation';
+import { CorrectionSmoother } from '../net/prediction';
+import { Predictor, PREDICTED_EVENTS } from './Predictor';
 import { CameraRig, type CameraHost } from '../camera/CameraRig';
 import { Effects } from '../render/Effects';
-import { buildArena, type ArenaInfo } from '../world/Arena';
+import { buildWorldView, type WorldView } from '../world/WorldView';
+import { generateWorld } from '../sim/world/generate';
+import { buildWorldColliders } from '../sim/world/colliders';
+import type { WorldData } from '../sim/world/types';
+import type { ModeState, Marker } from '../sim/missions/types';
+import type { PlayerSummary } from '../sim/protocol';
 import { AudioSystem } from '../audio/AudioSystem';
 import { PostFX } from '../render/PostFX';
+import { ModeVisuals } from '../render/ModeVisuals';
 import { ActorView, modelFor } from './ActorView';
 
 /** Keys that answer the grab sequence arrows (physical codes: WASD on QWERTY = ZQSD on AZERTY). */
@@ -46,6 +56,12 @@ export interface GameApi {
   selectCharacter(id: CharacterId): void;
   /** Grab sequence arrow click (UI). Ignored unless a sequence is waiting for input. */
   qteInput(dir: QteDir): void;
+  /** True while connected to a host server (no real pause). */
+  readonly online: boolean;
+  /** Joins the host server that served this page (or `url`); rejects with a French message. */
+  joinOnline(name: string, url?: string): Promise<void>;
+  /** Leaves the server and returns to solo. */
+  leaveOnline(): void;
 }
 
 /**
@@ -58,7 +74,12 @@ export class Game implements GameApi, CameraHost {
   readonly scene = new THREE.Scene();
   readonly input: InputManager;
   readonly settings: Settings = { ...DEFAULT_SETTINGS };
-  readonly physics: PhysicsWorld;
+  /** Client copy of the world colliders (camera collision, prediction); rebuilt when the world seed changes. */
+  physics!: PhysicsWorld;
+  /** The world of the current session (generated locally from the host's seed). */
+  world: WorldData | null = null;
+  private worldSeed: number | null = null;
+  private worldView: WorldView | null = null;
   detectedLayout: 'qwerty' | 'azerty' = 'qwerty';
   state: GameState = 'menu';
 
@@ -66,9 +87,16 @@ export class Game implements GameApi, CameraHost {
   private readonly camera = new CameraRig();
   private readonly fx: Effects;
   private readonly audio: AudioSystem;
-  private readonly arena: ArenaInfo;
   private readonly postfx: PostFX;
+  private readonly modeVisuals = new ModeVisuals(this.scene);
   private conn: Connection;
+  /** In-process host kept for solo while playing online. */
+  private readonly solo: LocalHost;
+  /** Online only: interpolation of remote actors and prediction of the own player. */
+  private buffer: SnapshotBuffer | null = null;
+  private predictor: Predictor | null = null;
+  private readonly smoother = new CorrectionSmoother();
+  private myInfo: ActorInfo | null = null;
   private readonly viewMap = new Map<number, ActorView>();
   private viewList: ActorView[] = [];
   private myActorId = 0;
@@ -79,7 +107,6 @@ export class Game implements GameApi, CameraHost {
   private seq = 0;
   private qteQueue: QteDir[] = [];
   private hitStop = 0;
-  private endTimer = -1;
   private lastStateChange = 0;
   private fps = 60;
   private projected = new THREE.Vector3();
@@ -87,14 +114,13 @@ export class Game implements GameApi, CameraHost {
   private qteCursor = false;
 
   static async create(canvasHost: HTMLElement): Promise<Game> {
-    const physics = await PhysicsWorld.create();
+    await PhysicsWorld.create(); // loads Rapier once; worlds are created synchronously afterwards
     const conn = await LocalHost.create('Vous', DEFAULT_SETTINGS.character);
-    return new Game(canvasHost, physics, conn);
+    return new Game(canvasHost, conn);
   }
 
-  private constructor(host: HTMLElement, physics: PhysicsWorld, conn: Connection) {
-    this.physics = physics;
-    this.conn = conn;
+  private constructor(host: HTMLElement, conn: LocalHost) {
+    this.conn = this.solo = conn;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
@@ -108,7 +134,6 @@ export class Game implements GameApi, CameraHost {
     this.input = new InputManager(this.renderer.domElement);
 
     // Client copy of the world: meshes plus colliders for camera collision (and prediction online).
-    this.arena = buildArena(this.scene, physics);
     this.fx = new Effects(this.scene, this.events, (id) => this.viewMap.get(id));
     this.audio = new AudioSystem(this.events);
     this.camera.attach(this);
@@ -144,8 +169,6 @@ export class Game implements GameApi, CameraHost {
       this.events.emit('hitStop', { duration: fb.hitStop });
       this.events.emit('cameraShake', fb.shake);
     });
-    this.events.on('victory', () => { if (this.state === 'playing') this.endTimer = 1.2; });
-    this.events.on('death', (e) => { if (e.id === this.myActorId && this.state === 'playing') this.endTimer = 2; });
 
     window.addEventListener('resize', () => this.resize());
     this.resize();
@@ -177,8 +200,12 @@ export class Game implements GameApi, CameraHost {
 
   private handle(m: ServerMsg): void {
     if (m.t === 'welcome') {
+      this.useWorld(m.seed);
+      this.hostFlag = m.isHost;
+      for (const id of [...this.viewMap.keys()]) this.removeView(id);
       this.myActorId = m.actorId;
       for (const info of m.actors) this.addView(info);
+      this.myInfo = m.actors.find((a) => a.id === m.actorId) ?? null;
     } else if (m.t === 'actors') {
       for (const info of m.add) this.addView(info);
       for (const id of m.remove) this.removeView(id);
@@ -213,6 +240,7 @@ export class Game implements GameApi, CameraHost {
   }
 
   private applySnapshot(s: Snapshot): void {
+    if (this.conn.online) return this.applyOnline(s);
     this.prevSnap = this.snap;
     this.prevStates.clear();
     if (this.prevSnap) for (const a of this.prevSnap.actors) this.prevStates.set(a.id, a);
@@ -220,6 +248,52 @@ export class Game implements GameApi, CameraHost {
     for (const a of s.actors) this.viewMap.get(a.id)?.apply(a, a, 1);
     for (const e of s.events) this.events.emit(e.type, e.payload as never);
     this.syncQteCursor();
+  }
+
+  /** Online: remote actors are interpolated from the buffer; the own actor is predicted and reconciled. */
+  private applyOnline(s: Snapshot): void {
+    this.snap = s;
+    this.buffer?.push(s, performance.now());
+    const me = s.actors.find((a) => a.id === this.myActorId);
+    if (me && !this.predictor && this.myInfo) {
+      this.predictor = new Predictor(this.physics, me.id, this.myInfo.name, this.settings.character, new THREE.Vector3(me.x, me.y, me.z));
+      for (const type of PREDICTED_EVENTS) this.predictor.events.on(type, (p) => this.events.emit(type, p as never));
+    }
+    if (me && this.predictor && s.you) {
+      const before = this.predictor.actor.position.clone();
+      if (this.predictor.onServer(me, s.you.ackSeq, s.you.disoriented)) this.smoother.correct(before, this.predictor.actor.position);
+    }
+    for (const e of s.events) {
+      // Own movement sounds/FX come from the prediction, without the round trip.
+      if (PREDICTED_EVENTS.has(e.type) && (e.payload as { id?: number }).id === this.myActorId && this.predictor && !this.predictor.followingServer) continue;
+      this.events.emit(e.type, e.payload as never);
+    }
+    this.syncQteCursor();
+  }
+
+  private interpolateOnline(alpha: number, frameDt: number): void {
+    const sample = this.buffer?.sample(performance.now());
+    if (sample) {
+      const from = new Map(sample.a.actors.map((a) => [a.id, a]));
+      for (const b of sample.b.actors) {
+        if (b.id === this.myActorId) continue;
+        this.viewMap.get(b.id)?.apply(from.get(b.id) ?? b, b, sample.t);
+      }
+    }
+    const v = this.me(), p = this.predictor, server = this.snap?.actors.find((a) => a.id === this.myActorId);
+    if (!v || !p || !server) return;
+    const a = p.actor;
+    const pos = new THREE.Vector3().lerpVectors(p.prev, a.position, alpha);
+    const own: ActorState = p.followingServer ? server : {
+      ...server, x: pos.x, y: pos.y, z: pos.z, vx: a.velocity.x, vy: a.velocity.y, vz: a.velocity.z, yaw: a.yaw,
+      anim: server.flags & ACTOR_FLAGS.busy || server.hp <= 0 ? server.anim : a.anim, animTime: a.animTime,
+      flags: (server.flags & ~(ACTOR_FLAGS.climbing | ACTOR_FLAGS.grounded | ACTOR_FLAGS.onWater))
+        | (a.climbing ? ACTOR_FLAGS.climbing : 0) | (a.grounded ? ACTOR_FLAGS.grounded : 0) | (a.onWater ? ACTOR_FLAGS.onWater : 0),
+      wallNx: a.wallNormal.x, wallNz: a.wallNormal.z,
+    };
+    v.apply(own, own, 1);
+    const o = this.smoother.update(frameDt * 1000);
+    v.offset.set(o.x, o.y, o.z);
   }
 
   /** Views between the previous and the latest snapshot. */
@@ -291,16 +365,85 @@ export class Game implements GameApi, CameraHost {
     this.audio.playUiClick();
   }
 
-  /** Solo only: the in-process host (restart, waves, debug). */
+  get online(): boolean { return this.conn.online; }
+
+  async joinOnline(name: string, url = NetClient.defaultUrl()): Promise<void> {
+    const client = await NetClient.connect(url, name, this.settings.character);
+    this.switchConnection(client);
+    this.buffer = new SnapshotBuffer();
+    this.processMessages();
+    this.setState('playing');
+    this.userGesture();
+  }
+
+  leaveOnline(): void {
+    if (!this.conn.online) return;
+    this.conn.close();
+    this.switchConnection(this.solo);
+    this.solo.flush();
+    this.quitToMenu();
+  }
+
+  private switchConnection(c: Connection): void {
+    for (const id of [...this.viewMap.keys()]) this.removeView(id);
+    this.predictor?.dispose();
+    this.predictor = null;
+    this.buffer = null;
+    this.snap = this.prevSnap = null;
+    this.prevStates.clear();
+    this.fx.clear();
+    this.camera.reset();
+    this.conn = c;
+    if (c === this.solo) {
+      this.myActorId = this.solo.sim.player(this.solo.playerId)!.actor.id;
+      this.handle({ t: 'welcome', playerId: this.solo.playerId, actorId: this.myActorId, seed: this.solo.sim.seed, isHost: true, actors: this.solo.sim.actorInfos() });
+    }
+  }
+
+  /** Builds (once per seed) the world view and the client's collider copy. */
+  private useWorld(seed: number): void {
+    if (seed === this.worldSeed) return;
+    this.predictor?.dispose();
+    this.predictor = null;
+    this.worldView?.dispose();
+    this.physics?.dispose();
+    this.world = generateWorld(seed);
+    this.worldSeed = seed;
+    this.physics = PhysicsWorld.createSync();
+    buildWorldColliders(this.physics, this.world);
+    this.physics.step(); // query pipeline sees the static world (camera and prediction raycasts)
+    this.worldView = buildWorldView(this.scene, this.world);
+  }
+
+  /** Shared state of co-op missions / PvP matches (latest snapshot). */
+  modeState(): ModeState | null { return this.snap?.mode ?? null; }
+  /** Minimap markers for this player (latest snapshot). */
+  markers(): Marker[] { return this.snap?.markers ?? []; }
+  /** Connected players (latest snapshot). */
+  players(): PlayerSummary[] { return this.snap?.players ?? []; }
+  get myPlayerId(): number { return this.snap?.you?.playerId ?? 0; }
+  get myActorIdPublic(): number { return this.myActorId; }
+  /** Camera heading (minimap rotation). */
+  get cameraYaw(): number { return this.camera.yaw; }
+
+  /** Test tooling (solo, or servers started with --debug). */
+  debugCommand(msg: DebugMsg): void { this.conn.send(msg); }
+
+  /** Online host only (the player on the server's machine): removes a player. */
+  kick(playerId: number): void { this.conn.send({ t: 'kick', playerId }); }
+  get isHost(): boolean { return this.hostFlag; }
+  private hostFlag = true;
+
+  /** Solo only: the in-process host (restart, debug). */
   private get local(): LocalHost | null {
     return this.conn instanceof LocalHost ? this.conn : null;
   }
 
   start(): void {
+    if (this.conn.online) { this.setState('playing'); this.userGesture(); return; }
     this.resetWorld();
     this.setState('playing');
     this.userGesture();
-    this.local?.waves.start();
   }
 
   pause(): void {
@@ -320,6 +463,7 @@ export class Game implements GameApi, CameraHost {
   }
 
   quitToMenu(): void {
+    if (this.conn.online) return this.leaveOnline();
     this.resetWorld();
     this.setState('menu');
   }
@@ -338,7 +482,6 @@ export class Game implements GameApi, CameraHost {
     const local = this.local;
     if (local) {
       local.sim.reset();
-      local.waves.reset();
       local.flush();
     }
     this.qteQueue.length = 0;
@@ -346,7 +489,6 @@ export class Game implements GameApi, CameraHost {
     this.fx.clear();
     this.camera.reset();
     this.hitStop = 0;
-    this.endTimer = -1;
     this.stepper.reset();
     this.input.releaseAll();
     this.processMessages();
@@ -355,13 +497,15 @@ export class Game implements GameApi, CameraHost {
   }
 
   /** One client step: send input (solo: the simulation steps right away) and apply what came back. */
-  private step(dt: number): void {
-    this.conn.sendInput(this.buildInput());
-    this.processMessages();
-    if (this.endTimer > 0) {
-      this.endTimer -= dt;
-      if (this.endTimer <= 0) this.setState(this.me()?.alive ? 'victory' : 'defeat');
+  private step(): void {
+    const input = this.buildInput();
+    if (this.predictor) {
+      this.predictor.setLock(this.camera.lockTarget);
+      this.predictor.step(input);
     }
+    this.conn.sendInput(input);
+    this.processMessages();
+    if (this.conn instanceof NetClient && !this.conn.connected) { this.leaveOnline(); return; }
   }
 
   /** Frees the cursor while a grab sequence waits for arrow clicks; recaptures it when the sequence ends. */
@@ -379,27 +523,36 @@ export class Game implements GameApi, CameraHost {
   frame(frameDt: number): void {
     if (frameDt > 0) this.fps += (1 / frameDt - this.fps) * 0.05;
     const me = this.me();
-    if (this.state === 'playing') {
+    if (this.conn.online && this.state !== 'menu') {
+      // Online never pauses: the menu overlay keeps sending (empty) input while the world goes on.
+      let steps = this.stepper.advance(frameDt);
+      while (steps-- > 0 && this.conn.online) this.step();
+      this.interpolateOnline(this.stepper.alpha, frameDt);
+      for (const v of this.viewList) v.syncModel(frameDt);
+      this.camera.update(frameDt, this.stepper.alpha);
+      if (me) this.worldView?.update(me.model.root.position, frameDt);
+    } else if (this.state === 'playing') {
       let steps = this.stepper.advance(frameDt);
       while (steps-- > 0) {
         if (this.hitStop > 0) { this.hitStop -= SIM_DT; continue; }
-        this.step(SIM_DT);
+        this.step();
         if (this.state !== 'playing') break;
       }
       this.interpolate(this.stepper.alpha);
       for (const v of this.viewList) v.syncModel(frameDt);
       this.camera.update(frameDt, this.stepper.alpha);
-      if (me) this.arena.update?.(me.model.root.position, frameDt);
+      if (me) this.worldView?.update(me.model.root.position, frameDt);
     } else if (this.state === 'menu') {
       // Idle showcase: models animate, nothing simulates.
       this.interpolate(1);
       for (const v of this.viewList) v.syncModel(frameDt);
       this.camera.update(frameDt, 1);
-      if (me) this.arena.update?.(me.model.root.position, frameDt);
+      if (me) this.worldView?.update(me.model.root.position, frameDt);
     } else {
       // Paused / ended: frozen frame, still re-rendered so the UI overlay stays live.
       this.camera.update(0, 1);
     }
+    this.modeVisuals.update(frameDt, { mode: this.snap?.mode ?? null, world: this.world, views: this.viewList, myActorId: this.myActorId, camera: this.camera.camera });
     this.updateSpeedLines(frameDt);
     this.postfx.render(frameDt);
   }
@@ -448,7 +601,6 @@ export class Game implements GameApi, CameraHost {
       });
     }
     const t = this.camera.lockTarget;
-    const waves = this.local?.waves;
     return {
       player: {
         hp: p?.hp ?? 0, maxHp: p?.maxHp ?? 1, chakra, maxChakra: p?.maxChakra ?? 1,
@@ -462,10 +614,10 @@ export class Game implements GameApi, CameraHost {
         cd('kunai', 'Kunai', labels.kunai.split(' ')[0], COMBAT.kunai.cooldown, 0),
         cd('dodge', 'Esquive', labels.dodge, COMBAT.dodge.cooldown, 0),
       ],
-      wave: waves?.wave ?? 0,
-      totalWaves: WAVES.length,
-      enemiesRemaining: waves?.remaining ?? 0,
-      intermission: waves?.intermission ?? 0,
+      wave: 0,
+      totalWaves: 0,
+      enemiesRemaining: this.snap?.mode.coop.phase === 'running' ? this.hostiles().length : 0,
+      intermission: 0,
       lockTarget: t && t.alive ? { name: t.name, hp: t.hp, maxHp: t.maxHp } : null,
       enemyBars,
       fps: this.fps,
@@ -478,6 +630,6 @@ export class Game implements GameApi, CameraHost {
     const sim = local?.sim;
     const player = sim?.player(local!.playerId)?.actor;
     // `ctx.player`: the local player's actor (fresh copy of the context fields on each call).
-    return { sim, ctx: sim ? { ...sim.ctx, player } : undefined, waves: local?.waves, ai: sim?.ai, camera: this.camera, player, views: this.viewMap };
+    return { sim, ctx: sim ? { ...sim.ctx, player } : undefined, ai: sim?.ai, camera: this.camera, player, views: this.viewMap };
   }
 }

@@ -22,18 +22,25 @@ export interface ToonOptions extends THREE.MeshToonMaterialParameters {
   rim?: number;
 }
 
-/** Rim light: bright fresnel edge tinted by the surface colour, the classic anime "back light". */
+/**
+ * Rim light: bright fresnel edge tinted by the surface colour, the classic anime "back light".
+ * `m.userData.rimTint` (a Color, black = off) adds an extra coloured edge, e.g. PvP team colours.
+ */
 function addRim(m: THREE.MeshToonMaterial, strength: number): void {
+  const tint = new THREE.Color(0);
+  m.userData.rimTint = tint;
   m.onBeforeCompile = (shader) => {
     shader.uniforms.rimStrength = { value: strength };
+    shader.uniforms.rimTint = { value: tint };
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', 'uniform float rimStrength;\nvoid main() {')
+      .replace('void main() {', 'uniform float rimStrength;\nuniform vec3 rimTint;\nvoid main() {')
       .replace(
         '#include <opaque_fragment>',
         `{
           float fres = 1.0 - saturate(dot(normalize(normal), normalize(vViewPosition)));
           float rim = smoothstep(0.62, 0.78, fres) * rimStrength;
           outgoingLight += (diffuseColor.rgb * 0.5 + vec3(0.35, 0.38, 0.45)) * rim;
+          outgoingLight = mix(outgoingLight, rimTint * 1.3, smoothstep(0.45, 0.72, fres) * step(0.001, dot(rimTint, rimTint)));
         }
         #include <opaque_fragment>`,
       );

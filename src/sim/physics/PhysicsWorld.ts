@@ -47,6 +47,11 @@ export class PhysicsWorld {
 
   private static initPromise: Promise<void> | null = null;
 
+  /** After one `create()` has loaded Rapier, more worlds can be made synchronously. */
+  static createSync(): PhysicsWorld {
+    return new PhysicsWorld();
+  }
+
   static async create(): Promise<PhysicsWorld> {
     PhysicsWorld.initPromise ??= RAPIER.init();
     await PhysicsWorld.initPromise;
@@ -101,6 +106,38 @@ export class PhysicsWorld {
   addStaticCylinder(center: THREE.Vector3, halfHeight: number, radius: number, opts: { climbable?: boolean } = {}): RAPIER.Collider {
     const desc = RAPIER.ColliderDesc.cylinder(halfHeight, radius)
       .setTranslation(center.x, center.y, center.z)
+      .setCollisionGroups(WORLD_GROUPS);
+    const c = this.world.createCollider(desc);
+    if (opts.climbable) this.climbable.add(c.handle);
+    return c;
+  }
+
+  /** Static capsule (axis Y) centred at `center`. Added for the v5 world (tree trunks). */
+  addStaticCapsule(center: THREE.Vector3, halfHeight: number, radius: number, opts: { climbable?: boolean } = {}): RAPIER.Collider {
+    const c = this.world.createCollider(RAPIER.ColliderDesc.capsule(halfHeight, radius).setTranslation(center.x, center.y, center.z).setCollisionGroups(WORLD_GROUPS));
+    if (opts.climbable) this.climbable.add(c.handle);
+    return c;
+  }
+
+  /** Static triangle mesh from raw world-space arrays (rocks, river surfaces). */
+  addStaticTrimesh(vertices: Float32Array, indices: Uint32Array, opts: { climbable?: boolean; water?: boolean } = {}): RAPIER.Collider {
+    const c = this.world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices).setCollisionGroups(WORLD_GROUPS));
+    if (opts.climbable) this.climbable.add(c.handle);
+    if (opts.water) this.water.add(c.handle);
+    return c;
+  }
+
+  /**
+   * Static heightfield: `heights[iz * nx + ix]` at (originX + ix * cell, originZ + iz * cell) (row-major in z, as in the
+   * world contract); transposed here to Rapier's column-major layout.
+   */
+  addStaticHeightfield(hf: { nx: number; nz: number; cell: number; originX: number; originZ: number; heights: Float32Array }, opts: { climbable?: boolean } = {}): RAPIER.Collider {
+    const { nx, nz, cell } = hf, h = new Float32Array(nx * nz);
+    for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix < nx; ix++) h[ix * nz + iz] = hf.heights[iz * nx + ix];
+    const w = (nx - 1) * cell, d = (nz - 1) * cell;
+    const desc = RAPIER.ColliderDesc.heightfield(nz - 1, nx - 1, h, { x: w, y: 1, z: d })
+      // Sub-mm nudge: Rapier misses vertical rays lying exactly on grid lines, which round coordinates often do.
+      .setTranslation(hf.originX + w / 2 + 0.0013, 0, hf.originZ + d / 2 + 0.0017)
       .setCollisionGroups(WORLD_GROUPS);
     const c = this.world.createCollider(desc);
     if (opts.climbable) this.climbable.add(c.handle);

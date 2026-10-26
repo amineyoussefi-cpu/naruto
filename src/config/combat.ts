@@ -67,6 +67,8 @@ export const COMBAT = {
     blocked: { intensity: 0.06, duration: 0.1 },
   },
   /** Seconds of invulnerability after respawn. */
+  /** Free roam: a dead player (not downed / KO'd by a mission or match) gets back up at the village after this (s). */
+  playerRespawnDelay: 4,
   respawnInvulnerable: 1.5,
   /**
    * Kakashi's Chidori: same charge flow as the Rasengan, release = piercing dash of dashDistance × lerp(distanceMinScale, 1, power) m

@@ -41,5 +41,5 @@ export const NET = {
   /** Player names are trimmed to this many characters. */
   nameMaxLength: 16,
   /** `NetClient.connect` gives up after this long without a welcome. */
-  connectTimeoutMs: 5000,
+  connectTimeoutMs: 15000,
 } as const;

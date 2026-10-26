@@ -1,7 +1,7 @@
 import type { CharacterId } from '../core/types';
-import { Sim } from '../sim/Sim';
-import { legacyWorld, waveDirector } from '../sim/legacy';
-import type { WaveManager } from '../sim/ai/WaveManager';
+import type { Sim } from '../sim/Sim';
+import { createGameSim } from '../sim/factory';
+import { WORLD_CONFIG } from '../config/world';
 import type { ClientMsg, PlayerId, PlayerInput, ServerMsg } from '../sim/protocol';
 import type { Connection } from './connection';
 
@@ -12,17 +12,13 @@ import type { Connection } from './connection';
 export class LocalHost implements Connection {
   readonly online = false;
   private queue: ServerMsg[] = [];
-  private constructor(readonly sim: Sim, readonly playerId: PlayerId, readonly waves: WaveManager) {}
+  private constructor(readonly sim: Sim, readonly playerId: PlayerId) {}
 
-  static async create(name: string, character: CharacterId, seed = 1): Promise<LocalHost> {
-    let director: ReturnType<typeof waveDirector> | null = null;
-    const sim = await Sim.create({
-      seed, online: false, buildWorld: legacyWorld,
-      createDirector: (ctx) => (director = waveDirector(ctx, () => sim.ai)),
-    });
+  static async create(name: string, character: CharacterId, seed: number = WORLD_CONFIG.defaultSeed): Promise<LocalHost> {
+    const sim = await createGameSim(seed, false);
     const p = sim.addPlayer(name, character);
     sim.takeActorChanges();
-    const host = new LocalHost(sim, p.id, director!.waves);
+    const host = new LocalHost(sim, p.id);
     host.queue.push({ t: 'welcome', playerId: p.id, actorId: p.actor.id, seed, isHost: true, actors: sim.actorInfos() });
     host.queue.push({ t: 'snapshot', snap: sim.snapshot(p.id, []) });
     return host;
@@ -48,7 +44,10 @@ export class LocalHost implements Connection {
   }
 
   send(msg: ClientMsg): void {
-    if (msg.t === 'character') {
+    if (msg.t === 'debug') {
+      this.sim.debug(this.playerId, msg);
+      this.flush();
+    } else if (msg.t === 'character') {
       this.sim.setCharacter(this.playerId, msg.character);
       this.flush();
     }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local single-player 3D ninja arena fighter (Three.js + Rapier).",
+  "description": "3D ninja fighter, solo offline or online co-op/PvP for up to 6 players over Tailscale (Three.js + Rapier).",
   "engines": {
     "node": ">=20.19"
   },
@@ -11,6 +11,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 4173 --strictPort",
+    "host": "vite build && vite build --ssr server/main.ts --outDir dist-server && node dist-server/main.js",
+    "host:dev": "vite build --ssr server/main.ts --outDir dist-server && (node dist-server/main.js --dev & vite)",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

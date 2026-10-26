@@ -1,11 +1,14 @@
 # Shinobi Arena
 
-Jeu de combat de ninjas en 3D, solo, à la troisième personne, jouable dans le navigateur et entièrement local.
+Jeu de combat de ninjas en 3D à la troisième personne, jouable dans le navigateur : en solo hors ligne, ou en ligne
+jusqu'à 6 joueurs (coopération et JcJ) sur un réseau privé Tailscale, sans aucun service cloud.
 Inspiré par la mobilité et le rythme de *Kizuna Drive*, *Shinobi Striker* et *Ultimate Ninja Storm 3*,
 avec des personnages, une arène et des sons 100 % originaux et procéduraux (voir [ASSETS.md](ASSETS.md)).
 
-Survivez à 5 vagues de ninjas (mêlée et distance) dans une grande vallée côtière (~210 m : prairies, rivières
-turquoise et îlots où l'on marche sur l'eau grâce au chakra, rochers, falaise marine, mer à l'horizon), avec un rythme inspiré de *Storm 3* :
+Un grand monde (~900 m) : le village caché (version fan, sans logo officiel) avec son QG, ses quartiers, son marché,
+ses toits et sa rivière ; une grande forêt d'arbres géants ; un lac et la mer avec plages, pontons et îles où l'on marche
+sur l'eau. Les **missions coopératives** et les **matchs JcJ** (1c1 à 3c3, équipes inégales possibles) se lancent depuis
+des carrés au sol à côté du QG et de la grande porte. Rythme inspiré de *Storm 3* :
 ruée de chakra vers l'ennemi, combos de 5 coups qui foncent sur la cible et projettent l'adversaire, permutation pour
 fuir un enchaînement, double saut, marche sur les murs au chakra, kunaï et Rasengan.
 
@@ -36,6 +39,41 @@ npm run preview   # http://localhost:4173
 
 Ces commandes sont identiques sous macOS, Windows et Linux.
 
+## Jouer en ligne avec Tailscale / Online play over Tailscale
+
+Un joueur **héberge** la partie ; tout le monde (lui compris) joue dans son navigateur.
+*One player **hosts**; everyone, the host included, plays in a browser.*
+
+1. **Hôte / host** : installer [Tailscale](https://tailscale.com/download) et se connecter. Inviter ses amis dans son
+   tailnet (*Settings → Users → Invite*). Le plan gratuit Personal accepte jusqu'à 6 utilisateurs, assez pour 6 joueurs.
+   *Install Tailscale, sign in and invite your friends to your tailnet (the free Personal plan allows 6 users).*
+2. **Amis / friends** : installer Tailscale, accepter l'invitation, se connecter.
+   *Install Tailscale, accept the invite, sign in.*
+3. **Hôte / host**, dans ce dossier / in this folder :
+   ```bash
+   npm ci
+   npm run host          # compile puis lance le serveur sur le port 5180
+   ```
+   Le serveur affiche les adresses à partager, par ex. `http://mon-mac.tailnet-xyz.ts.net:5180` (nom MagicDNS) ou
+   `http://100.x.y.z:5180`. Au premier lancement, macOS demande d'autoriser les connexions entrantes pour `node` :
+   accepter. *The server prints the URLs to share; allow incoming connections for `node` when macOS asks.*
+4. **Tout le monde / everyone** ouvre l'adresse, choisit **Multijoueur**, un pseudo et un personnage, puis **Rejoindre**.
+   L'hôte ouvre `http://localhost:5180`. *Open the URL, choose Multijoueur, a name and a character, then Rejoindre.*
+5. Vérifier que la liaison est directe / check the link is direct : `tailscale ping <nom-de-l-hote>` doit répondre
+   `via <ip>:<port>` (direct). `via DERP(...)` = relais : jouable mais avec plus de latence.
+
+Sécurité : par défaut le serveur n'écoute que sur `localhost` et l'interface Tailscale (100.64.0.0/10), jamais sur tout
+le réseau, donc il n'est pas exposé sur un Wi-Fi public. `npm run host -- --lan` l'ouvre au réseau local (à éviter hors de
+chez soi). Autres options : `--port 5190`, `--seed 42` (même graine = même monde). Si une fonction du navigateur exige
+HTTPS, `tailscale serve 5180` fournit une adresse `https://…ts.net`.
+*By default the server binds to localhost and the Tailscale interface only. `--lan` opens it to the local network.*
+
+6 joueurs maximum (un 7ᵉ voit « Serveur plein »). Un joueur déconnecté retrouve son personnage s'il revient avec le même
+pseudo dans les 30 s. L'hôte peut exclure un joueur depuis le menu (Échap). En ligne, Échap ouvre le menu sans mettre la
+partie en pause.
+
+Développement : `npm run host:dev` (serveur + serveur de dev Vite sur http://localhost:5173, `/ws` relayé).
+
 ## Docker
 
 ```bash
@@ -54,7 +92,8 @@ npm run lint        # ESLint
 npm run typecheck   # tsc --noEmit
 npm test            # Vitest : logique (chakra, dégâts, garde, invulnérabilité, cooldowns, coups uniques, IA, vagues, réglages…)
 npx playwright install chromium   # une seule fois
-npm run test:e2e    # Playwright : menu → combat → pause figée → victoire → recommencer → défaite → menu
+npm run test:e2e    # Playwright : solo (monde libre, pause, carré co-op → mission → victoire, saisie) et en ligne
+                    # (3 navigateurs + 2 serveurs hôtes --debug : mission co-op, match JcJ, changement d'équipe, K.-O., serveur plein)
 ```
 
 ## Commandes
@@ -77,9 +116,10 @@ L'aide affiche les libellés adaptés (détection automatique, modifiable dans P
 | Saisie, puis les 6 flèches dans l'ordre (touches fléchées, ZQSD/WASD ou clic) | Clic gauche + droit ensemble | Clic gauche + droit ensemble |
 | Concentration (recharge chakra) | R (maintenir) | R (maintenir) |
 | Esquive ; quand vous êtes touché : permutation (jauge de 4) | C | C |
-| Verrouiller / libérer la cible | F | F |
+| Verrouiller / libérer la cible ; dans un carré : changer de mission / d'arène ; près d'un allié à terre : maintenir pour le relever | F | F |
+| Carte plein écran (molette : zoom) | M | M |
 | Changer de cible | Tab / molette | Tab / molette |
-| Pause | Échap / P | Échap / P |
+| Menu (pause en solo ; en ligne la partie continue) | Échap / P | Échap / P |
 
 Cliquer dans le jeu capture la souris. Perdre le focus ou la capture met le jeu en pause.
 
@@ -104,26 +144,29 @@ Chakra : réserve de 300, régénération passive 12/s (après 2,5 s sans dépen
 ## Architecture
 
 ```
+server/              hôte en ligne (Node) : HTTP statique + WebSocket RFC 6455 maison, boucle 60 Hz, instantanés 30 Hz
 src/
   main.ts            démarrage, boucle requestAnimationFrame
   config/            TOUTES les valeurs de gameplay (voir docs/CONFIG.md)
   core/              EventBus typé, pas fixe, entrées (codes physiques), types partagés
-  game/              Game (intégration, machine d'états, HUD), Actor, GameContext
-  physics/           Rapier : monde, contrôleur de personnage cinématique, stepCharacter
-  player/            locomotion, saut, escalade, réapparition
+  sim/               SIMULATION pure (Node + navigateur) : Sim, acteurs, physique Rapier, déplacements, combat, IA,
+                     monde généré par graine (sim/world), missions co-op et JcJ (sim/missions), protocole réseau
+  net/               LocalHost (solo dans la page), NetClient (WebSocket), codec binaire, interpolation, réconciliation
+  game/              client : Game (rendu, caméra, entrées → PlayerInput, instantanés → ActorView), prédiction
   camera/            caméra orbitale, anti-collision, verrouillage de cible
-  combat/            Fighter (stats pures), hitbox/projectiles/dégâts, actions du joueur
-  ai/                machines à états ennemies, directeur d'attaques, vagues
-  world/ render/     arène, ninjas procéduraux animés, effets
+  world/ render/     maillages du monde (tronçons de 64 m + LOD), ninjas procéduraux, effets, dôme, noms
   audio/             effets sonores synthétisés (WebAudio)
-  ui/                menus, HUD, pause, paramètres (localStorage)
+  ui/                menus, salon, HUD, minicarte et carte, écrans de mission / JcJ, paramètres
 ```
 
 - **Simulation à pas fixe (60 Hz)** séparée du rendu, qui interpole. Les déplacements et les dégâts ne dépendent
   pas des FPS. En pause, aucun pas n'est exécuté (physique, IA, attaques, projectiles, régénération, cooldowns) et
   l'accumulateur est remis à zéro à la reprise : ni saut temporel ni touche bloquée.
-- **Ordre d'un pas** : entrées → caméra (verrouillage) → combat joueur → déplacement joueur → IA → combat
-  (fighters, hitbox, projectiles) → effets → vagues → nettoyage → physique.
+- **Hôte autoritaire** : la même simulation (`src/sim/`) tourne sur l'hôte en ligne et dans la page en solo. Le client
+  n'envoie qu'un `PlayerInput` par pas et dessine les instantanés ; il prédit ses propres déplacements et interpole les
+  autres (100 ms). Les coups sont décidés par l'hôte, avec compensation de latence (≤ 150 ms) entre joueurs.
+- **Ordre d'un pas** : entrées → combat des joueurs → déplacement des joueurs → IA → combat (fighters, hitbox,
+  projectiles) → missions / JcJ → nettoyage → physique.
 - **Événements de gameplay** (`src/core/events.ts`) : `damage`, `death`, `attackStart`, `telegraph`, `technique`,
   `chakraFail`, `waveStart`, `victory`… Audio, effets et HUD ne font qu'écouter.
 - **Frappes** : sphères actives pendant la fenêtre d'attaque, testées contre les capsules ; chaque hitbox mémorise
@@ -157,20 +200,29 @@ complet, ~140–220 appels de dessin et ~240 k triangles par image). Avec le ren
 environ 16 FPS : le jeu reste jouable en test mais pas confortable. Une seule lumière projette des ombres
 (carte 2048), les accessoires répétés sont instanciés et les particules sont mutualisées.
 
+## Modes de jeu
+
+- **Monde libre** : pas d'ennemis ; on explore le village, la forêt, le lac. La minicarte (en haut à droite) tourne avec la
+  caméra (option « Minimap orientée nord »).
+- **Mission co-op** : tous les joueurs connectés se placent dans le carré bleu devant le QG (F change de mission) ; compte à
+  rebours de 5 s (quitter le carré l'annule). Les groupes ennemis apparaissent sur la minicarte (crâne rouge + nombre) et
+  attendent qu'on s'approche. À 0 PV on est **à terre** 30 s : un allié maintient F 3 s pour relever (40 % PV). Tout le monde
+  à terre = défaite. Résultats 10 s puis retour au QG. Le nombre et les PV des ennemis augmentent avec le nombre de joueurs.
+- **Match JcJ** : carrés rouge/bleu sur la place du QG et derrière la grande porte ; la moitié où l'on se tient = son équipe
+  (on peut changer jusqu'au compte à rebours). Départ quand tous les joueurs sont dans le même carré, au moins 1 par équipe
+  et 3 au plus. F choisit l'arène (Terrain d'entraînement, Clairière, Lac, Toits), fermée par un dôme de chakra. 2 manches
+  gagnantes, 120 s par manche (sinon l'équipe au plus fort % de PV gagne la manche), dégâts × 0,7, l'équipe en infériorité
+  numérique reçoit +25 % de PV par joueur manquant. Pas de tir allié.
+
 ## Limites connues
 
-- Compatibilité **vérifiée** : macOS + Chromium (tests e2e, captures, mesure FPS) et Docker sur macOS.
-  Windows, Linux, Firefox et Safari : **prévue** (mêmes commandes npm, aucun chemin spécifique) mais non testée.
-- La sensation (accélérations, caméra, timing des combos) a été vérifiée par scripts et captures, pas par une longue
-  session de jeu humaine ; les valeurs de `src/config/` sont un premier réglage.
-- Les ennemis à distance ne vérifient pas la ligne de vue avant de lancer.
-- La carte n'a plus de zone de chute (tout le bas est de l'eau praticable) ; la réapparition sous y = −20 reste active par sécurité.
-- La mer s'arrête à une limite invisible à ~128 m du centre.
-- Le clignotement d'impact ne colore pas tous les petits détails des personnages (bandages, plaque, visage).
-- Les bruits de pas sont joués pour tous les personnages, sans atténuation avec la distance.
-- Pas de musique d'ambiance ; pas de manette.
-- Si le navigateur refuse de recapturer la souris à la fin d'une saisie, un clic dans le jeu la recapture.
-- Le son de charge ne reprend pas après une pause en pleine charge (la charge, elle, reprend normalement).
+- Compatibilité **vérifiée** : macOS + Chromium (tests e2e, captures) et Docker sur macOS (solo). Le jeu en ligne a été testé
+  avec plusieurs navigateurs sur la même machine (localhost) ; une vraie partie entre machines via Tailscale (relais DERP
+  compris) n'a pas été testée. Avec une liaison relayée, compter ~50–150 ms de latence de plus : les déplacements restent
+  fluides (prédiction), mais les coups (décidés par l'hôte) arrivent avec ce délai.
+- En ligne, seuls les déplacements du joueur local sont prédits ; les attaques, ruées et esquives suivent l'hôte (un aller-retour).
+- `docker compose up` sert le jeu solo (fichiers statiques) ; pour héberger une partie en ligne, utiliser `npm run host`.
+- Le ralenti à l'impact (hit-stop) n'existe qu'en solo.
+- Les bruits de pas sont joués pour tous les personnages, sans atténuation avec la distance ; pas de musique ; pas de manette.
+- Le son de charge ne reprend pas après une pause en pleine charge.
 - Les yeux du Sharingan ne s'appliquent pas au modèle Blender (Sasuke et Kakashi sont procéduraux).
-- Le Chidori ne s'arrête que sur des obstacles à hauteur de poitrine (rayon unique), pas sur de très petits rochers.
-- Le multijoueur est hors périmètre.

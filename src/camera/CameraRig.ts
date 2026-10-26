@@ -32,7 +32,7 @@ const ease = (sharpness: number, dt: number): number => 1 - Math.exp(-sharpness 
  * Third-person orbit camera with wall avoidance and lock-on. Owner: camera agent.
  */
 export class CameraRig {
-  readonly camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.1, 500);
+  readonly camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.1, 700);
   /** Horizontal look angle; yaw 0 looks toward +Z. Movement is relative to this. */
   yaw = 0;
   pitch: number = CAMERA.defaultPitch;
